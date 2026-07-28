@@ -41,7 +41,7 @@ Then we load a program:
 //////////////////////////////////////////////////
 // Load program
 
-// Program for a block_size 64 accelerator
+// Program for a 256-unit accelerator
 const char* vollo_program_path = "./single-decision-u256.vollo";
 EXIT_ON_ERROR(vollo_rt_load_program(ctx, vollo_program_path));
 ```
@@ -49,7 +49,7 @@ EXIT_ON_ERROR(vollo_rt_load_program(ctx, vollo_program_path));
 Here we're using a relative path (in the `example` directory) to one of the
 example Vollo program, a program that computes a simple single decision with an input of size 32.
 The program is specifically for a 256-unit version of the accelerator such as the
-default configuration for the `IA840F` FPGA.
+default configuration for the `V80` FPGA.
 
 ---
 

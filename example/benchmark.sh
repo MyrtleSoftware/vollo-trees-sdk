@@ -32,7 +32,7 @@ pip3 install "$VOLLO_TREES_SDK"/python/vollo_trees_compiler-*.whl
 
 info "building example application"
 mkdir -p example
-cp "$VOLLO_TREES_SDK"/example/{example.c,npy.h,utils.h,Makefile} example/
+cp "$VOLLO_TREES_SDK"/example/{example.c,npy.{c,h},utils.{c,h},Makefile} example/
 chmod +w example
 ( cd example; make vollo-example)
 

@@ -31,7 +31,7 @@ def cli():
         print(f"Num trees: {forest.num_trees()}")
 
     config = vtc.Config.from_json(args.config)
-    program = forest.to_program_bf16(config)
+    program = forest.to_program_f32(config)
     program.save(out_path)
 
 

@@ -1,19 +1,24 @@
+#if __STDC_VERSION__ >= 199901L
+#define _XOPEN_SOURCE 600
+#else
+#define _XOPEN_SOURCE 500
+#endif /* __STDC_VERSION__ */
 #include "npy.h"
 #include "utils.h"
 
-#include <assert.h>
 #include <ctype.h>
 #include <getopt.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <time.h>
 #include <vollo-rt.h>
 
-#define NUM_RANDOM_INPUT_VECTORS 32
-
 typedef struct ExampleOptions {
   // Path to program.vollo
   const char* program_path;
+  // Device specifier to pass to vollo-rt (defaults to 0)
+  const char* device_spec;
   // Index of the model to do inference with (defaults to 0)
   size_t model_index;
   // Number of inferences to compute
@@ -22,20 +27,63 @@ typedef struct ExampleOptions {
   size_t max_concurrent_jobs;
   // Number of extra inferences to run before starting to measure
   size_t num_warmup_inferences;
-  // Use the fp32 version of the API (compute is still done in bf16)
+  // Time to wait in between each inference in nanoseconds (only for 1 concurrent job, defaults to
+  // 0)
+  size_t inference_spacing_ns;
+  // Maximum duration for the compute phase in milliseconds (defaults to 0 = no limit)
+  size_t max_duration_ms;
+  // Maximum duration for the warmup phase in milliseconds (defaults 0 = no limit)
+  size_t max_warmup_duration_ms;
+  // The state of the model will be reset before every inference that's a multiple of this (defaults
+  // to 0 = no reset)
+  // The model must have been compiled with generate_state_reset = True for it to be resettable
+  size_t state_reset_spacing;
+
+  // Provide all inputs/outputs as fp32 (these may get converted to bf16 by the runtime)
   bool fp32_api;
+  // Provide all inputs/outputs as bf16 (these may get converted to fp32 by the runtime)
+  bool bf16_api;
   // Use raw DMA buffers and skip input/output data copy
   bool raw_buffer_api;
-  // The input is random numbers (as opposed to all 1.0), only when input_path is not set
+  // Run the program in software simulation rather than on hardware
+  bool run_in_vm;
+  // The inputs are random numbers (as opposed to all 1.0), only when input_paths is not set
   bool random_input;
+  // The number of random input candidates to generate (defaults to 32)
+  size_t num_random_candidates;
   // Output detailed measurements in JSON
   bool json;
-  // Path to an input file (.npy format with float32 as dtype)
-  const char* input_path;
-  // Path to an output file (.npy format with float32 as dtype)
-  // Only the first output is serialized to a file even when num_inferences > 1
-  const char* output_path;
+  // Paths to input files (.npy format with float32 as dtype)
+  // One path per model input
+  const char* const* input_paths;
+  // Paths to output files (.npy format with float32 as dtype)
+  // One path per model output
+  // Only the model outputs from the first inference are serialized to files even when
+  // num_inferences > 1
+  const char* const* output_paths;
 } ExampleOptions;
+
+// Print the hardware config of accelerator 0.
+//
+// block_size is a Vollo concept: it is not meaningful for Vollo Trees and querying it panics. We
+// detect the architecture at runtime with vollo_rt_architecture, so Vollo Trees reports tree units
+// and omits block_size.
+static void print_hw_config(vollo_rt_context_t ctx, const char* what) {
+  if (vollo_rt_architecture(ctx, 0) == vollo_rt_architecture_vollo_trees) {
+    fprintf(
+      stderr,
+      "Using Vollo %s with %zu tree unit(s)\n",
+      what,
+      vollo_rt_accelerator_num_cores(ctx, 0));
+  } else {
+    fprintf(
+      stderr,
+      "Using Vollo %s with %zu core(s) and block_size %zu\n",
+      what,
+      vollo_rt_accelerator_num_cores(ctx, 0),
+      vollo_rt_accelerator_block_size(ctx, 0));
+  }
+}
 
 // A small example of the Vollo API
 //
@@ -51,7 +99,8 @@ typedef struct ExampleOptions {
 // This example is set up to get some timing data from the multiple runs of
 // multiple concurrent jobs on a single model
 static void vollo_example(ExampleOptions options) {
-  struct timespec start_setup_time, start_warmup_time, start_compute_time, end_time;
+  struct timespec start_setup_time, start_warmup_time, start_compute_time, end_time,
+    wait_time_start, wait_time_current;
 
   clock_gettime(CLOCK_MONOTONIC, &start_setup_time);
 
@@ -66,63 +115,140 @@ static void vollo_example(ExampleOptions options) {
 
   //////////////////////////////////////////////////
   // Add accelerators
-  size_t accelerator_index = 0;
-  EXIT_ON_ERROR(vollo_rt_add_accelerator(ctx, accelerator_index));
-  fprintf(
-    stderr,
-    "Using Vollo accelerator with %ld tree unit(s)\n",
-    vollo_rt_accelerator_num_cores(ctx, accelerator_index));
+  if (options.run_in_vm) {
+    bool bit_accurate = true;
+    EXIT_ON_ERROR(vollo_rt_add_vm(ctx, 0, bit_accurate));
+  } else {
+    EXIT_ON_ERROR(vollo_rt_add_device(ctx, 0, options.device_spec));
+    print_hw_config(ctx, "accelerator");
+  }
 
   //////////////////////////////////////////////////
   // Load program
   EXIT_ON_ERROR(vollo_rt_load_program(ctx, options.program_path));
+
+  // The VM's hardware config is determined by the program
+  if (options.run_in_vm) {
+    print_hw_config(ctx, "VM");
+  }
 
   //////////////////////////////////////////////////
   // Get model metadata
   size_t num_models = vollo_rt_num_models(ctx);
 
   size_t model_index = options.model_index;
-  assert(model_index < num_models);
+  ALWAYS_ASSERT(model_index < num_models);
 
   size_t model_num_inputs = vollo_rt_model_num_inputs(ctx, model_index);
-  assert(model_num_inputs == 1);
-
   size_t model_num_outputs = vollo_rt_model_num_outputs(ctx, model_index);
-  assert(model_num_outputs == 1);
 
   const char* model_name = vollo_rt_model_name(ctx, model_index);
 
   fprintf(stderr, "Program metadata for model ");
   if (model_name != NULL) {
-    fprintf(stderr, "%s (model index %ld):\n", model_name, model_index);
+    fprintf(stderr, "%s (model index %zu):\n", model_name, model_index);
   } else {
-    fprintf(stderr, "%ld:\n", model_index);
+    fprintf(stderr, "%zu:\n", model_index);
   }
-  const size_t num_input_elems = vollo_rt_model_input_num_elements(ctx, model_index, 0);
-  fprintf(stderr, "  %ld input with shape: [%ld]\n", model_num_inputs, num_input_elems);
+  fprintf(stderr, "  %zu input(s) with shape(s): [", model_num_inputs);
 
-  const size_t num_output_elems = vollo_rt_model_output_num_elements(ctx, model_index, 0);
-  fprintf(stderr, "  %ld output with shape: [%ld]\n", model_num_outputs, num_output_elems);
-  assert(num_output_elems == 1);
+  for (size_t model_input_ix = 0; model_input_ix < model_num_inputs; model_input_ix++) {
+    const size_t* input_shape = vollo_rt_model_input_shape(ctx, model_index, model_input_ix);
+    size_t input_shape_len = vollo_rt_model_input_shape_len(ctx, model_index, model_input_ix);
+
+    for (size_t input_shape_ix = 0; input_shape_ix < input_shape_len; input_shape_ix++) {
+      fprintf(stderr, "%zu", *input_shape);
+      input_shape++;
+      if (input_shape_ix + 1 != input_shape_len) {
+        fprintf(stderr, ", ");
+      }
+    }
+    fprintf(stderr, "]");
+
+    if (model_input_ix + 1 < model_num_inputs) {
+      fprintf(stderr, ", [");
+    } else {
+      fprintf(stderr, "\n");
+    }
+  }
+
+  fprintf(stderr, "  %zu output(s) with shape(s): [", model_num_outputs);
+
+  for (size_t model_output_ix = 0; model_output_ix < model_num_outputs; model_output_ix++) {
+    const size_t* output_shape = vollo_rt_model_output_shape(ctx, model_index, model_output_ix);
+    size_t output_shape_len = vollo_rt_model_output_shape_len(ctx, model_index, model_output_ix);
+
+    for (size_t output_shape_ix = 0; output_shape_ix < output_shape_len; output_shape_ix++) {
+      fprintf(stderr, "%zu", *output_shape);
+      output_shape++;
+      if (output_shape_ix + 1 != output_shape_len) {
+        fprintf(stderr, ", ");
+      }
+    }
+    fprintf(stderr, "]");
+
+    if (model_output_ix + 1 < model_num_outputs) {
+      fprintf(stderr, ", [");
+    } else {
+      fprintf(stderr, "\n");
+    }
+  }
+
+  if (vollo_rt_model_input_streaming_dim(ctx, model_index, 0) >= 0) {
+    fprintf(stderr, "  The model is streaming\n");
+  }
+
+  if (options.state_reset_spacing != 0) {
+    ALWAYS_ASSERT(vollo_rt_model_is_resettable(ctx, model_index));
+  }
 
   //////////////////////////////////////////////////
   // Setup input/output files
 
-  NpyArray input_array = {0};
-  if (options.input_path != NULL) {
-    input_array = read_npy(options.input_path);
+  NpyArray* input_arrays = (NpyArray*)malloc(sizeof(NpyArray) * model_num_inputs);
+  ALWAYS_ASSERT(input_arrays != NULL);
 
-    // Check that the input has the number of input elements that the model expects
-    assert(input_array.buffer_len == num_input_elems);
-    assert(input_array.shape_len == 1);
+  if (options.input_paths[0] != NULL) {
+    for (size_t i = 0; i < model_num_inputs; i++) {
+      ALWAYS_ASSERT(options.input_paths[i] != NULL);
+
+      input_arrays[i] = read_npy(options.input_paths[i]);
+
+      // Check that the input has the number of input elements that the model expects
+      ALWAYS_ASSERT(
+        input_arrays[i].buffer_len == vollo_rt_model_input_num_elements(ctx, model_index, i));
+      const size_t* input_shape = vollo_rt_model_input_shape(ctx, model_index, i);
+
+      // Check that the input has the shape of input that the model expects
+      for (size_t j = 0; j < input_arrays[i].shape_len; j++) {
+        ALWAYS_ASSERT(input_arrays[i].shape[j] == (size_t)*input_shape);
+        input_shape++;
+      }
+    }
   }
 
-  NpyArray output_array = {0};
-  if (options.output_path != NULL) {
-    output_array.buffer = (float*)malloc(sizeof(float) * num_output_elems);
-    output_array.buffer_len = num_output_elems;
-    output_array.shape_len = 1;
-    output_array.shape[0] = num_output_elems;
+  NpyArray* output_arrays = (NpyArray*)malloc(sizeof(NpyArray) * model_num_outputs);
+  ALWAYS_ASSERT(output_arrays != NULL);
+
+  if (options.output_paths[0] != NULL) {
+    for (size_t i = 0; i < model_num_outputs; i++) {
+      ALWAYS_ASSERT(options.output_paths[i] != NULL);
+
+      output_arrays[i].buffer_len = vollo_rt_model_output_num_elements(ctx, model_index, i);
+      output_arrays[i].buffer = (float*)malloc(sizeof(float) * output_arrays[i].buffer_len);
+      ALWAYS_ASSERT(output_arrays[i].buffer != NULL);
+      {
+        const size_t* output_shape = vollo_rt_model_output_shape(ctx, model_index, i);
+        const uint8_t output_shape_len
+          = (uint8_t)vollo_rt_model_output_shape_len(ctx, model_index, i);
+
+        output_arrays[i].shape_len = output_shape_len;
+        for (uint8_t output_shape_ix = 0; output_shape_ix < output_shape_len; output_shape_ix++) {
+          output_arrays[i].shape[output_shape_ix] = (size_t)*output_shape;
+          output_shape++;
+        }
+      }
+    }
   }
 
   //////////////////////////////////////////////////
@@ -130,43 +256,112 @@ static void vollo_example(ExampleOptions options) {
 
   // Number of input vectors
   // When random input is used, we randomly select a vector of random data for each inference
-  size_t num_inputs = options.random_input ? NUM_RANDOM_INPUT_VECTORS : 1;
-  bf16** inputs = (bf16**)malloc(sizeof(bf16*) * num_inputs);
-  float** inputs_fp32 = (float**)malloc(sizeof(float*) * num_inputs);
+  size_t num_test_inputs = options.random_input ? options.num_random_candidates : 1;
+  void*** test_inputs_dyn = (void***)malloc(sizeof(void**) * num_test_inputs);
+  ALWAYS_ASSERT(test_inputs_dyn != NULL);
+  number_format* input_buffer_formats
+    = (number_format*)malloc(sizeof(number_format) * model_num_inputs);
+  ALWAYS_ASSERT(input_buffer_formats != NULL);
 
-  for (size_t i = 0; i < num_inputs; i++) {
-    inputs[i] = options.raw_buffer_api ? vollo_rt_get_raw_buffer(ctx, num_input_elems)
-                                       : (bf16*)malloc(sizeof(bf16) * num_input_elems);
-    inputs_fp32[i] = (float*)malloc(sizeof(float) * num_input_elems);
+  for (size_t i = 0; i < num_test_inputs; i++) {
+    test_inputs_dyn[i] = (void**)malloc(sizeof(void*) * model_num_inputs);
+    ALWAYS_ASSERT(test_inputs_dyn[i] != NULL);
 
-    for (size_t j = 0; j < num_input_elems; j++) {
-      if (options.input_path != NULL) {
-        inputs[i][j] = float_to_bf16(input_array.buffer[j]);
-        inputs_fp32[i][j] = input_array.buffer[j];
+    for (size_t j = 0; j < model_num_inputs; j++) {
+      size_t num_input_elems = vollo_rt_model_input_num_elements(ctx, model_index, j);
+      number_format fmt;
+      if (options.fp32_api) {
+        fmt = number_format_fp32;
+      } else if (options.bf16_api) {
+        fmt = number_format_bf16;
       } else {
-        inputs[i][j] = options.random_input ? rand_bf16() : 0x3f80;  // 1.0 as a bf16
-        inputs_fp32[i][j] = options.random_input ? rand_float() : 1.0f;
+        fmt = vollo_rt_model_input_format(ctx, model_index, j);
+      }
+      input_buffer_formats[j] = fmt;
+
+      if (fmt == number_format_fp32) {
+        test_inputs_dyn[i][j]
+          = options.raw_buffer_api
+              ? vollo_rt_get_raw_buffer_bytes(ctx, sizeof(float) * num_input_elems)
+              : (void*)malloc(sizeof(float) * num_input_elems);
+        ALWAYS_ASSERT(test_inputs_dyn[i][j] != NULL);
+        float* buf = (float*)test_inputs_dyn[i][j];
+        for (size_t k = 0; k < num_input_elems; k++) {
+          if (options.input_paths[0] != NULL) {
+            buf[k] = input_arrays[j].buffer[k];
+          } else {
+            buf[k] = options.random_input ? rand_float() : 1.0f;
+          }
+        }
+      } else {
+        test_inputs_dyn[i][j]
+          = options.raw_buffer_api
+              ? vollo_rt_get_raw_buffer_bytes(ctx, sizeof(bf16) * num_input_elems)
+              : (bf16*)malloc(sizeof(bf16) * num_input_elems);
+        ALWAYS_ASSERT(test_inputs_dyn[i][j] != NULL);
+        bf16* buf = (bf16*)test_inputs_dyn[i][j];
+        for (size_t k = 0; k < num_input_elems; k++) {
+          if (options.input_paths[0] != NULL) {
+            buf[k] = float_to_bf16(input_arrays[j].buffer[k]);
+          } else {
+            buf[k] = options.random_input ? rand_bf16() : 0x3f80;  // 1.0 as a bf16
+          }
+        }
       }
     }
   }
 
-  bf16* output = options.raw_buffer_api ? vollo_rt_get_raw_buffer(ctx, num_output_elems)
-                                        : (bf16*)malloc(sizeof(bf16) * num_output_elems);
-  float* output_fp32 = (float*)malloc(sizeof(float) * num_output_elems);
+  void** model_outputs_dyn = (void**)malloc(sizeof(void*) * model_num_outputs);
+  ALWAYS_ASSERT(model_outputs_dyn != NULL);
+  number_format* output_buffer_formats
+    = (number_format*)malloc(sizeof(number_format) * model_num_outputs);
+  ALWAYS_ASSERT(output_buffer_formats != NULL);
+
+  for (size_t i = 0; i < model_num_outputs; i++) {
+    size_t num_output_elems = vollo_rt_model_output_num_elements(ctx, model_index, i);
+    number_format fmt;
+    if (options.fp32_api) {
+      fmt = number_format_fp32;
+    } else if (options.bf16_api) {
+      fmt = number_format_bf16;
+    } else {
+      fmt = vollo_rt_model_output_format(ctx, model_index, i);
+    }
+    output_buffer_formats[i] = fmt;
+
+    if (fmt == number_format_fp32) {
+      model_outputs_dyn[i]
+        = options.raw_buffer_api
+            ? vollo_rt_get_raw_buffer_bytes(ctx, sizeof(float) * num_output_elems)
+            : (void*)malloc(sizeof(float) * num_output_elems);
+    } else {
+      model_outputs_dyn[i] = options.raw_buffer_api
+                               ? vollo_rt_get_raw_buffer_bytes(ctx, sizeof(bf16) * num_output_elems)
+                               : (void*)malloc(sizeof(bf16) * num_output_elems);
+    }
+    ALWAYS_ASSERT(model_outputs_dyn[i] != NULL);
+  }
 
   struct timespec* start_times
     = (struct timespec*)malloc(sizeof(struct timespec) * options.num_inferences);
+  ALWAYS_ASSERT(start_times != NULL);
   double* latencies = (double*)malloc(sizeof(double) * options.num_inferences);
+  ALWAYS_ASSERT(latencies != NULL);
 
   //////////////////////////////////////////////////
   // Run
 
-  fprintf(stderr, "Starting %ld inferences\n", options.num_inferences);
+  fprintf(stderr, "Starting %zu inferences\n", options.num_inferences);
 
-  size_t total_inferences = options.num_warmup_inferences + options.num_inferences;
+  size_t num_warmup = options.num_warmup_inferences;
+  size_t total_inferences = num_warmup + options.num_inferences;
   size_t outstanding_jobs = 0;
   size_t inf_started = 0;
   size_t inf_completed = 0;
+
+  // Defer printing error messages until after all inferences
+  bool max_warmup_duration_reached = false;
+  bool max_compute_duration_reached = false;
 
   // We don't need a user context here
   // Since we're only using 1 model, the inferences are guaranteed to complete
@@ -175,32 +370,65 @@ static void vollo_example(ExampleOptions options) {
 
   clock_gettime(CLOCK_MONOTONIC, &start_warmup_time);
 
+  start_times[0] = start_warmup_time;
+
   while (inf_completed < total_inferences) {
     //////////////////////////////////////////////////
     // Add jobs
 
     while (outstanding_jobs < options.max_concurrent_jobs && inf_started < total_inferences) {
+      struct timespec now;
+      clock_gettime(CLOCK_MONOTONIC, &now);
+
+      // Check warmup time limit
+      if (
+        options.max_warmup_duration_ms > 0 && inf_started < num_warmup
+        && diff_timespec_ns(start_warmup_time, now) / 1e6
+             >= (double)options.max_warmup_duration_ms) {
+        total_inferences -= (num_warmup - inf_started);
+        num_warmup = inf_started;
+        max_warmup_duration_reached = true;
+      }
+
+      // Check compute time limit
+      // Note strict greater than (>) comparison to ensure that start_times[0] is valid.
+      // This also means we will always start at least one compute inference.
+      if (
+        options.max_duration_ms > 0 && inf_started > num_warmup
+        && diff_timespec_ns(start_times[0], now) / 1e6 >= (double)options.max_duration_ms) {
+        total_inferences = inf_started;
+        max_compute_duration_reached = true;
+        break;
+      }
+
       size_t inf_ix = 0;
 
       // if it is not warmup
-      if (inf_started >= options.num_warmup_inferences) {
-        inf_ix = inf_started - options.num_warmup_inferences;
-        clock_gettime(CLOCK_MONOTONIC, &start_times[inf_ix]);
+      if (inf_started >= num_warmup) {
+        inf_ix = inf_started - num_warmup;
+        start_times[inf_ix] = now;
       }
 
-      int input_ix = options.random_input ? rand() % NUM_RANDOM_INPUT_VECTORS : 0;
+      size_t input_ix = options.random_input ? (size_t)rand() % options.num_random_candidates : 0;
 
-      if (options.fp32_api) {
-        const float* input_arr[1] = {inputs_fp32[input_ix]};
-        float* output_arr[1] = {output_fp32};
-
-        EXIT_ON_ERROR(vollo_rt_add_job_fp32(ctx, model_index, user_ctx, input_arr, output_arr));
-      } else {
-        const bf16* input_arr[1] = {inputs[input_ix]};
-        bf16* output_arr[1] = {output};
-
-        EXIT_ON_ERROR(vollo_rt_add_job_bf16(ctx, model_index, user_ctx, input_arr, output_arr));
+      // Reset the state of the model, if desired
+      if (
+        options.state_reset_spacing != 0
+        && inf_started % options.state_reset_spacing == 0
+        // No need to reset before the first inference
+        && inf_started != 0) {
+        EXIT_ON_ERROR(vollo_rt_add_reset_job(ctx, model_index));
       }
+
+      // Add an inference
+      EXIT_ON_ERROR(vollo_rt_add_job(
+        ctx,
+        model_index,
+        user_ctx,
+        (const number_format*)input_buffer_formats,
+        (const void* const*)test_inputs_dyn[input_ix],
+        (const number_format*)output_buffer_formats,
+        model_outputs_dyn));
 
       inf_started++;
       outstanding_jobs++;
@@ -221,27 +449,47 @@ static void vollo_example(ExampleOptions options) {
       clock_gettime(CLOCK_MONOTONIC, &job_completed_time);
 
       for (size_t i = 0; i < num_completed; i++) {
-        // Serialize first output if output path is set
-        if (inf_completed == 0 && options.output_path != NULL) {
-          for (size_t i = 0; i < num_output_elems; i++) {
-            if (options.fp32_api) {
-              output_array.buffer[i] = output_fp32[i];
-            } else {
-              output_array.buffer[i] = bf16_to_float(output[i]);
-            }
-          }
+        // Serialize model outputs from first inference if output paths are set
+        if (inf_completed == 0 && options.output_paths[0] != NULL) {
+          for (size_t j = 0; j < model_num_outputs; j++) {
+            ALWAYS_ASSERT(options.output_paths[j] != NULL);
 
-          write_npy(options.output_path, output_array);
+            size_t num_output_elems = vollo_rt_model_output_num_elements(ctx, model_index, j);
+
+            number_format fmt = output_buffer_formats[j];
+
+            for (size_t k = 0; k < num_output_elems; k++) {
+              if (fmt == number_format_fp32) {
+                float* buf = (float*)model_outputs_dyn[j];
+                output_arrays[j].buffer[k] = buf[k];
+              } else {
+                bf16* buf = (bf16*)model_outputs_dyn[j];
+                output_arrays[j].buffer[k] = bf16_to_float(buf[k]);
+              }
+            }
+
+            write_npy(options.output_paths[j], output_arrays[j]);
+          }
         }
 
         // if it is not warmup
-        if (inf_completed >= options.num_warmup_inferences) {
-          size_t ix = inf_completed - options.num_warmup_inferences;
+        if (inf_completed >= num_warmup) {
+          size_t ix = inf_completed - num_warmup;
 
           latencies[ix] = diff_timespec_ns(start_times[ix], job_completed_time);
         }
 
         inf_completed++;
+      }
+
+      // Wait in between inferences
+      if (options.inference_spacing_ns > 0) {
+        clock_gettime(CLOCK_MONOTONIC, &wait_time_start);
+
+        do {
+          clock_gettime(CLOCK_MONOTONIC, &wait_time_current);
+        } while (diff_timespec_ns_ll(wait_time_start, wait_time_current)
+                 < (long long)options.inference_spacing_ns);
       }
     }
   }
@@ -249,24 +497,35 @@ static void vollo_example(ExampleOptions options) {
   start_compute_time = start_times[0];
   clock_gettime(CLOCK_MONOTONIC, &end_time);
 
+  if (max_warmup_duration_reached) {
+    fprintf(stderr, "Warmup time limit reached after %zu inferences\n", num_warmup);
+  }
+  if (max_compute_duration_reached) {
+    fprintf(
+      stderr, "Compute time limit reached after %zu inferences\n", total_inferences - num_warmup);
+  }
+
+  size_t actual_num_inferences = inf_completed - num_warmup;
+
   //////////////////////////////////////////////////
   // Summarize latencies
 
-  latency_summary summary = summarize_latencies(options.num_inferences, latencies);
+  latency_summary summary = summarize_latencies(actual_num_inferences, latencies);
 
   double setup_time = diff_timespec_ns(start_setup_time, start_warmup_time) / NANOSECONDS;
   double warmup_time = diff_timespec_ns(start_warmup_time, start_compute_time) / NANOSECONDS;
   double compute_time = diff_timespec_ns(start_compute_time, end_time) / NANOSECONDS;
-  double throughput = (double)options.num_inferences / compute_time;
+  double throughput = (double)actual_num_inferences / compute_time;
 
   fprintf(stderr, "Done\n");
 
   if (options.json) {
     printf("{\n");
     printf("  \"options\": {\n");
-    printf("    \"max_concurrent_jobs\": %ld,\n", options.max_concurrent_jobs);
-    printf("    \"num_inferences\": %ld,\n", options.num_inferences);
-    printf("    \"raw_buffer_api\": %d\n", options.raw_buffer_api);
+    printf("    \"max_concurrent_jobs\": %zu,\n", options.max_concurrent_jobs);
+    printf("    \"num_inferences\": %zu,\n", actual_num_inferences);
+    printf("    \"raw_buffer_api\": %d,\n", options.raw_buffer_api);
+    printf("    \"inference_spacing_ns\": %zu\n", options.inference_spacing_ns);
     printf("  },\n");
     printf("  \"metrics\": {\n");
     printf("    \"time\": {\n");
@@ -284,7 +543,7 @@ static void vollo_example(ExampleOptions options) {
     printf("  }\n");
     printf("}\n");
   } else {
-    printf("Ran %ld inferences in %f s with:\n", options.num_inferences, compute_time);
+    printf("Ran %zu inferences in %f s with:\n", actual_num_inferences, compute_time);
     printf("  mean latency of %f us\n", summary.mean_latency_ns / 1000);
     printf("  99%% latency of %f us\n", summary.p99_latency_ns / 1000);
     printf("  throughput of %f inf/s\n", throughput);
@@ -295,27 +554,41 @@ static void vollo_example(ExampleOptions options) {
 
   free(latencies);
   free(start_times);
-  if (!options.raw_buffer_api) {
-    free(output);
-  }
-  free(output_fp32);
-  for (size_t i = 0; i < num_inputs; i++) {
+
+  for (size_t i = 0; i < model_num_outputs; i++) {
     if (!options.raw_buffer_api) {
-      free(inputs[i]);
+      free(model_outputs_dyn[i]);
     }
-    free(inputs_fp32[i]);
   }
-  free(inputs);
-  free(inputs_fp32);
+  free(model_outputs_dyn);
+  free(output_buffer_formats);
+
+  for (size_t i = 0; i < num_test_inputs; i++) {
+    for (size_t j = 0; j < model_num_inputs; j++) {
+      if (!options.raw_buffer_api) {
+        free(test_inputs_dyn[i][j]);
+      }
+    }
+    free(test_inputs_dyn[i]);
+  }
+  free(test_inputs_dyn);
+  free(input_buffer_formats);
 
   vollo_rt_destroy(ctx);
 
-  if (options.input_path != NULL) {
-    free_npy(input_array);
+  if (options.input_paths[0] != NULL) {
+    for (size_t i = 0; i < model_num_inputs; i++) {
+      free_npy(input_arrays[i]);
+    }
   }
-  if (options.output_path != NULL) {
-    free_npy(output_array);
+  free(input_arrays);
+
+  if (options.output_paths[0] != NULL) {
+    for (size_t i = 0; i < model_num_outputs; i++) {
+      free_npy(output_arrays[i]);
+    }
   }
+  free(output_arrays);
 }
 
 void print_help(const char* example_program) {
@@ -328,6 +601,12 @@ void print_help(const char* example_program) {
     "\n"
 
     "OPTIONS:\n"
+    "    -d, --device\n"
+    "        Device specifier to pass to vollo-rt\n"
+    "        Examples: 0, 01:00.0\n"
+    "        Defaults to 0\n"
+    "\n"
+
     "    -m, --model-index\n"
     "        Index of the model to do inference with\n"
     "        Defaults to 0\n"
@@ -339,15 +618,27 @@ void print_help(const char* example_program) {
     "\n"
 
     "    -F, --fp32-api\n"
-    "        Use the fp32 version of the API (compute is still done in bf16)\n"
+    "        Provide all inputs/outputs as fp32 (these may get converted to bf16 by the runtime)\n"
+    "\n"
+
+    "    -B, --bf16-api\n"
+    "        Provide all inputs/outputs as bf16 (these may get converted to fp32 by the runtime)\n"
     "\n"
 
     "    -R, --raw-buffer-api\n"
     "        Use raw DMA buffers and skip input/output data copy\n"
     "\n"
 
+    "    -v, --run-in-vm\n"
+    "        Run the program in a VM instead of on an accelerator\n"
+    "\n"
+
     "    -r, --random\n"
     "        Use random inputs instead of the constant 1.0\n"
+    "\n"
+
+    "    -n, --num-random-candidates\n"
+    "        The number of random input candidates to generate (defaults to 32)\n"
     "\n"
 
     "    -c, --max-concurrent-jobs\n"
@@ -360,18 +651,43 @@ void print_help(const char* example_program) {
     "        Defaults to 10000\n"
     "\n"
 
+    "    -s, --inference-spacing-ns\n"
+    "        Time to wait in between each inference in nanoseconds (only for 1 concurrent job)\n"
+    "        Defaults to 0\n"
+    "\n"
+
+    "    --max-duration-ms\n"
+    "        Maximum duration for the compute phase in milliseconds (0 = no limit)\n"
+    "        Defaults to 0\n"
+    "\n"
+
+    "    --max-warmup-duration-ms\n"
+    "        Maximum duration for the warmup phase in milliseconds (0 = no limit)\n"
+    "        Defaults to 0\n"
+    "\n"
+
+    "    --state-reset-spacing\n"
+    "        The state of the model will be reset before every inference that's a multiple of \n"
+    "        this (0 = no reset)\n"
+    "        The model must have been compiled with generate_state_reset = True for it to be \n"
+    "        resettable\n"
+    "        Defaults to 0\n"
+    "\n"
+
     "    -j, --json\n"
     "        Output detailed measurements in JSON\n"
     "\n"
 
     "    -f, --input\n"
     "        Path to an input file (.npy format with bfloat16 as dtype)\n"
+    "        Use this argument once per model input, in order of model input\n"
     "\n"
 
     "    -o, --output\n"
     "        Path to an output file (.npy format with bfloat16 as dtype)\n"
-    "        Note: Only the first output is serialized to a file even when\n"
-    "        num_inferences > 1\n"
+    "        Use this argument once per model output, in order of model output\n"
+    "        Note: Only the model outputs from the first inference are serialized\n"
+    "        to files even when num_inferences > 1\n"
     "\n"
 
     "    -h, --help\n"
@@ -380,32 +696,63 @@ void print_help(const char* example_program) {
     example_program);
 }
 
+// Long-only option IDs (no short alias)
+enum {
+  OPT_MAX_DURATION_MS = 256,
+  OPT_MAX_WARMUP_DURATION_MS,
+  OPT_STATE_RESET_SPACING,
+};
+
+#define MAX_INPUT_PATH_COUNT 10
+#define MAX_OUTPUT_PATH_COUNT 10
+
 int main(int argc, char** argv) {
+  const char* input_paths[MAX_INPUT_PATH_COUNT] = {NULL};
+  size_t input_paths_count = 0;
+  const char* output_paths[MAX_OUTPUT_PATH_COUNT] = {NULL};
+  size_t output_paths_count = 0;
+
   ExampleOptions options;
   options.program_path = "";
+  options.device_spec = "0";
   options.model_index = 0;
   options.fp32_api = false;
+  options.bf16_api = false;
   options.raw_buffer_api = false;
   options.random_input = false;
+  options.num_random_candidates = 32;
+  options.run_in_vm = false;
   options.max_concurrent_jobs = 1;
   options.num_inferences = 10000;
   options.num_warmup_inferences = 10000;
+  options.inference_spacing_ns = 0;
+  options.max_duration_ms = 0;
+  options.max_warmup_duration_ms = 0;
+  options.state_reset_spacing = 0;
   options.json = false;
-  options.input_path = NULL;
-  options.output_path = NULL;
+  options.input_paths = input_paths;
+  options.output_paths = output_paths;
 
   // Seed the random number generator
   srand((uint32_t)time(NULL));
 
   // Parse example options
   static struct option long_options[] = {
+    {"device", required_argument, 0, 'd'},
     {"model-index", required_argument, 0, 'm'},
     {"num-inferences", required_argument, 0, 'i'},
     {"fp32-api", no_argument, 0, 'F'},
+    {"bf16-api", no_argument, 0, 'B'},
     {"raw-buffer-api", no_argument, 0, 'R'},
+    {"run-in-vm", no_argument, 0, 'v'},
     {"random", no_argument, 0, 'r'},
+    {"num-random-candidates", required_argument, 0, 'n'},
     {"max-concurrent-jobs", required_argument, 0, 'c'},
     {"num-warmup-inferences", required_argument, 0, 'w'},
+    {"inference-spacing-ns", required_argument, 0, 's'},
+    {"max-duration-ms", required_argument, 0, OPT_MAX_DURATION_MS},
+    {"max-warmup-duration-ms", required_argument, 0, OPT_MAX_WARMUP_DURATION_MS},
+    {"state-reset-spacing", required_argument, 0, OPT_STATE_RESET_SPACING},
     {"json", no_argument, 0, 'j'},
     {"input", required_argument, 0, 'f'},
     {"output", required_argument, 0, 'o'},
@@ -415,18 +762,51 @@ int main(int argc, char** argv) {
 
   int opt = 0;
   int long_index = 0;
-  while ((opt = getopt_long(argc, argv, "i:FRrc:w:jf:o:h", long_options, &long_index)) != -1) {
+  while ((opt = getopt_long(argc, argv, "d:m:i:FBRvrn:c:w:s:jf:o:h", long_options, &long_index))
+         != -1) {
     switch (opt) {
-    case 'm': options.model_index = (size_t)strtoul(optarg, NULL, 10); break;
-    case 'i': options.num_inferences = (size_t)strtoul(optarg, NULL, 10); break;
+    case 'd': options.device_spec = optarg; break;
+    case 'm': options.model_index = parse_size_arg(optarg, "--model-index"); break;
+    case 'i': options.num_inferences = parse_size_arg(optarg, "--num-inferences"); break;
     case 'F': options.fp32_api = true; break;
+    case 'B': options.bf16_api = true; break;
     case 'R': options.raw_buffer_api = true; break;
+    case 'v': options.run_in_vm = true; break;
     case 'r': options.random_input = true; break;
-    case 'c': options.max_concurrent_jobs = (size_t)strtoul(optarg, NULL, 10); break;
-    case 'w': options.num_warmup_inferences = (size_t)strtoul(optarg, NULL, 10); break;
+    case 'n':
+      options.num_random_candidates = parse_size_arg(optarg, "--num-random-candidates");
+      break;
+    case 'c': options.max_concurrent_jobs = parse_size_arg(optarg, "--max-concurrent-jobs"); break;
+    case 'w':
+      options.num_warmup_inferences = parse_size_arg(optarg, "--num-warmup-inferences");
+      break;
+    case 's':
+      options.inference_spacing_ns = parse_size_arg(optarg, "--inference-spacing-ns");
+      break;
+    case OPT_MAX_DURATION_MS:
+      options.max_duration_ms = parse_size_arg(optarg, "--max-duration-ms");
+      break;
+    case OPT_MAX_WARMUP_DURATION_MS:
+      options.max_warmup_duration_ms = parse_size_arg(optarg, "--max-warmup-duration-ms");
+      break;
+    case OPT_STATE_RESET_SPACING:
+      options.state_reset_spacing = parse_size_arg(optarg, "--state-reset-spacing");
+      break;
     case 'j': options.json = true; break;
-    case 'f': options.input_path = optarg; break;
-    case 'o': options.output_path = optarg; break;
+    case 'f':
+      // We still need a NULL at the end of the array in case we don't specify enough inputs on the
+      // CLI for the model, so the last slot must stay free.
+      ALWAYS_ASSERT(input_paths_count + 1 < MAX_INPUT_PATH_COUNT);
+      input_paths[input_paths_count] = optarg;
+      input_paths_count++;
+      break;
+    case 'o':
+      // We still need a NULL at the end of the array in case we don't specify enough outputs on the
+      // CLI for the model, so the last slot must stay free.
+      ALWAYS_ASSERT(output_paths_count + 1 < MAX_OUTPUT_PATH_COUNT);
+      output_paths[output_paths_count] = optarg;
+      output_paths_count++;
+      break;
     default: print_help(argv[0]); exit(opt == 'h' ? EXIT_SUCCESS : EXIT_FAILURE);
     }
   }
@@ -439,16 +819,16 @@ int main(int argc, char** argv) {
     exit(EXIT_FAILURE);
   }
 
-  assert(options.max_concurrent_jobs > 0);
-  assert(options.num_inferences > 0);
+  ALWAYS_ASSERT(options.max_concurrent_jobs > 0);
+  ALWAYS_ASSERT(options.num_inferences > 0);
 
-  if (options.random_input && options.input_path != NULL) {
+  if (options.random_input && options.input_paths[0] != NULL) {
     fprintf(stderr, "Options -r,--random and -f,--input are not compatible\n");
     exit(EXIT_FAILURE);
   }
 
-  if (options.fp32_api && options.raw_buffer_api) {
-    fprintf(stderr, "Options -F,--fp32-api and -R,--raw-buffer-api are not compatible\n");
+  if (options.fp32_api && options.bf16_api) {
+    fprintf(stderr, "Options -F,--fp32-api and -B,--bf16-api are not compatible\n");
     exit(EXIT_FAILURE);
   }
 
@@ -458,6 +838,15 @@ int main(int argc, char** argv) {
       "Combination of -R,--raw-buffer-api and -c,--max-concurrent-jobs > 1 is not supported in "
       "this simple example\n");
     fprintf(stderr, "NOTE: output raw buffers cannot be reused for concurrent inferences\n");
+    exit(EXIT_FAILURE);
+  }
+
+  if ((options.inference_spacing_ns > 0) && (options.max_concurrent_jobs > 1)) {
+    fprintf(
+      stderr,
+      "Combination of -s,--inference-spacing-ns and -c,--max-concurrent-jobs > 1 is not supported "
+      "in "
+      "this simple example\n");
     exit(EXIT_FAILURE);
   }
 

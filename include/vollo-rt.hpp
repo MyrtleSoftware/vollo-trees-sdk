@@ -1,11 +1,29 @@
 // Copyright(C) 2024 Myrtle Software Ltd. All rights reserved.
 
+#pragma once
+
 #include <cstdarg>
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
 #include <new>
 #include <ostream>
+
+/// The numeric type of an input or output.
+enum class number_format : uint32_t {
+  /// Brain-float 16 format. Corresponds to the C type `bf16`.
+  number_format_bf16 = 0,
+  /// 32-bit floating point format. Corresponds to C type `float`.
+  number_format_fp32 = 1,
+};
+
+/// The accelerator architecture that a loaded program (or hardware bitstream) targets.
+enum class vollo_rt_architecture_t : uint32_t {
+  /// Vollo: the neural-network inference accelerator.
+  vollo_rt_architecture_vollo = 0,
+  /// Vollo Trees: the tree-ensemble inference accelerator.
+  vollo_rt_architecture_vollo_trees = 1,
+};
 
 /// Functions in vollo-rt that can return an error return `vollo_rt_error_t`.
 /// NULL is returned where there are no errors, otherwise it is a null-terminated string containing
@@ -24,6 +42,21 @@ using vollo_rt_context_t = void*;
 /// Note: Make sure to NOT use C literals to create values of this type,
 /// instead convert from float (by truncating or rounding as appropriate)
 using bf16 = uint16_t;
+
+/// An in-place update to perform on a single input argument.
+///
+/// This is used in `vollo_rt_add_job_partial_update`.
+struct partial_update_input {
+  /// The network argument number to update.
+  uint32_t input_arg_num;
+  /// The number of values to update
+  uint32_t num_updates;
+  /// The indices of this input to update.
+  const uint32_t* update_indices;
+  /// The values of this input to update. The type of this array must match the number format the
+  /// model's input, specified by `vollo_rt_model_input_format`.
+  const void* update_values;
+};
 
 extern "C" {
 
@@ -47,15 +80,62 @@ void vollo_rt_destroy(vollo_rt_context_t vollo);
 /// of PCI addresses. This should be called after `vollo_rt_init` but before `vollo_rt_load_program`
 vollo_rt_error_t vollo_rt_add_accelerator(vollo_rt_context_t vollo, size_t accelerator_index);
 
+/// Add an accelerator using a device specifier string. This is a more versatile version of
+/// `vollo_rt_add_accelerator` that takes a string instead of just an index.
+///
+/// `accelerator_index` assigns the logical accelerator slot used by query APIs such as
+/// `vollo_rt_accelerator_num_cores` and `vollo_rt_accelerator_block_size`.
+///
+/// - `0` -- vollo accelerator 0
+/// - `01:00.0` -- vollo accelerator with PCI address 01:00.0
+/// - `vm:vollo` -- anonymous Vollo VM, bit-accurate by default
+/// - `vm+f32:vollo` -- anonymous Vollo VM in non-bit-accurate mode
+/// - `vm:bittware-ia420f-c6b32` -- Vollo VM constrained to the given named hw config preset
+/// - `vm+bit-accurate:bittware-ia420f-c6b32` -- same named VM in bit-accurate mode (the default)
+/// - `vm:path/to/hw-config.json` -- Vollo VM constrained to the given hw config JSON file
+/// - `vm+f32:path/to/hw-config.json` -- same JSON-configured VM in non-bit-accurate mode
+///
+/// This should be called after `vollo_rt_init` but before `vollo_rt_load_program`.
+vollo_rt_error_t vollo_rt_add_device(
+  vollo_rt_context_t vollo, size_t accelerator_index, const char* device_spec);
+
+/// Add a VM, to run a program in software simulation rather than on hardware.
+/// Allows testing the API without needing an accelerator or license, giving correct results but
+/// much slower.
+///
+/// You can choose any `accelerator_index` to assign to the VM, then use the rest of the API as
+/// though the VM is an accelerator. However, the VM hardware config is determined by the
+/// requirements of the loaded program, so until you call `vollo_rt_load_program` the values
+/// returned by `vollo_rt_accelerator_num_cores` and `vollo_rt_accelerator_block_size` will be 0.
+///
+/// This works with both Vollo and Vollo Trees programs. The program type is detected when the
+/// program is loaded. Note that `vollo_rt_accelerator_block_size` is not meaningful for Vollo Trees
+/// programs and will panic if called, and the `bit_accurate` flag is ignored for Vollo Trees (the
+/// forest is always evaluated exactly).
+///
+/// This should be called after `vollo_rt_init` but before `vollo_rt_load_program`.
+///
+/// - bit_accurate:
+///     use a compute model that replicates the VOLLO accelerator with bit-accuracy. Disable to use
+///     single precision compute.
+vollo_rt_error_t vollo_rt_add_vm(
+  vollo_rt_context_t vollo, size_t accelerator_index, bool bit_accurate);
+
 /// Get the number of cores of a Vollo accelerator.
 /// For Vollo Trees accelerators, this will return the number of tree units.
+///
+/// If used on a VM before loading a program, it will return 0, because the VM hardware config is
+/// determined by the requirements of the loaded program.
 ///
 /// Requirements (panics otherwise):
 /// - The accelerator at `accelerator_index` has already been added to context
 ///   with `vollo_rt_add_accelerator`
 size_t vollo_rt_accelerator_num_cores(vollo_rt_context_t vollo, size_t accelerator_index);
 
-/// Get the block size of a Vollo accelerator
+/// Get the block size of a Vollo accelerator.
+///
+/// If used on a VM before loading a program, it will return 0, because the VM hardware config is
+/// determined by the requirements of the loaded program.
 ///
 /// Requirements (panics otherwise):
 /// - The accelerator at `accelerator_index` has already been added to context
@@ -63,6 +143,18 @@ size_t vollo_rt_accelerator_num_cores(vollo_rt_context_t vollo, size_t accelerat
 /// - The accelerator at `accelerator_index` has a Vollo bitstream loaded (i.e. not a Vollo Trees
 /// bitstream)
 size_t vollo_rt_accelerator_block_size(vollo_rt_context_t vollo, size_t accelerator_index);
+
+/// Get the architecture (Vollo or Vollo Trees) of the accelerator at `accelerator_index`.
+///
+/// The architecture is determined by the loaded program, or for a hardware accelerator by its
+/// bitstream. It is available after `vollo_rt_add_device` / `vollo_rt_add_accelerator` for a
+/// hardware accelerator, and after `vollo_rt_load_program` for a VM.
+///
+/// Requirements (panics otherwise):
+/// - The accelerator at `accelerator_index` has already been added to the context.
+/// - The architecture is determinable (for a VM, a program has been loaded or a hardware config was
+///   given).
+vollo_rt_architecture_t vollo_rt_architecture(vollo_rt_context_t vollo, size_t accelerator_index);
 
 /// Load a program onto the Vollo accelerators.
 /// This should be called after `vollo_rt_add_accelerator`
@@ -78,6 +170,26 @@ size_t vollo_rt_accelerator_block_size(vollo_rt_context_t vollo, size_t accelera
 /// a program needs to be changed or reset, first `vollo_rt_destroy` the current
 /// context, then start a new context with `vollo_rt_init`.
 vollo_rt_error_t vollo_rt_load_program(vollo_rt_context_t vollo, const char* program_path);
+
+/// Load a program onto the Vollo accelerators.
+/// This should be called after `vollo_rt_add_accelerator`
+///
+/// This function is the same as `vollo_rt_load_program` but loads the program
+/// from a buffer instead of directly from a file. The content of the buffer
+/// needs to be a valid Vollo program.
+///
+/// A Vollo program is generated by the Vollo compiler, it is typically named
+/// "<program_name>.vollo".
+/// The program is intended for a specific hw_config (number of accelerators,
+/// cores and other HW configuration options), this function will return an
+/// error if any accelerator configuration is incompatible with the program.
+/// Once loaded, the program provides inference for several models concurrently.
+///
+/// Note: This should only be called once per `vollo_rt_context_t`, as such if
+/// a program needs to be changed or reset, first `vollo_rt_destroy` the current
+/// context, then start a new context with `vollo_rt_init`.
+vollo_rt_error_t vollo_rt_load_program_from_buffer(
+  vollo_rt_context_t vollo, const void* buffer, size_t len);
 
 /// Inspect the number of models in the program loaded onto the vollo.
 ///
@@ -115,7 +227,12 @@ size_t vollo_rt_model_num_outputs(vollo_rt_context_t vollo, size_t model_index);
 
 /// Get the shape for input at a given index
 ///
-/// The return value is a 0 terminated array of dims containing the input shape
+/// The return value is an array of dims containing the input shape
+/// Use `vollo_rt_model_input_shape_len` to get the number of axes in the shape.
+///
+/// For backwards compatibility the array is also 0-terminated, but that should not be relied upon
+/// in order to correctly support shapes containing a 0 dimension
+///
 /// The value lives for as long as the model
 ///
 /// Requirements (panics otherwise):
@@ -125,9 +242,23 @@ size_t vollo_rt_model_num_outputs(vollo_rt_context_t vollo, size_t model_index);
 const size_t* vollo_rt_model_input_shape(
   vollo_rt_context_t vollo, size_t model_index, size_t input_index);
 
+/// Get the number of axes in the shape for the input at a given index
+///
+/// Requirements (panics otherwise):
+/// - a program was loaded with `vollo_rt_load_program`
+/// - `model_index < vollo_rt_num_models`
+/// - `input_index < vollo_rt_model_num_inputs`
+size_t vollo_rt_model_input_shape_len(
+  vollo_rt_context_t vollo, size_t model_index, size_t input_index);
+
 /// Get the shape for output at a given index
 ///
-/// The return value is a 0 terminated array of dims containing the output shape
+/// The return value is an array of dims containing the output shape
+/// Use `vollo_rt_model_output_shape_len` to get the number of axes in the shape.
+///
+/// For backwards compatibility the array is also 0-terminated, but that should not be relied upon
+/// in order to correctly support shapes containing a 0 dimension
+///
 /// The value lives for as long as the model
 ///
 /// Requirements (panics otherwise):
@@ -135,6 +266,15 @@ const size_t* vollo_rt_model_input_shape(
 /// - `model_index < vollo_rt_num_models`
 /// - `output_index < vollo_rt_model_num_outputs`
 const size_t* vollo_rt_model_output_shape(
+  vollo_rt_context_t vollo, size_t model_index, size_t output_index);
+
+/// Get the number of axes in the shape for the output at a given index
+///
+/// Requirements (panics otherwise):
+/// - a program was loaded with `vollo_rt_load_program`
+/// - `model_index < vollo_rt_num_models`
+/// - `output_index < vollo_rt_model_num_outputs`
+size_t vollo_rt_model_output_shape_len(
   vollo_rt_context_t vollo, size_t model_index, size_t output_index);
 
 /// Get the number of elements for input at a given index
@@ -189,11 +329,38 @@ int vollo_rt_model_input_streaming_dim(
 int vollo_rt_model_output_streaming_dim(
   vollo_rt_context_t vollo, size_t model_index, size_t output_index);
 
+/// Get the number type of an input at the given index
+///
+/// Requirements (panics otherwise):
+/// - a program was loaded with `vollo_rt_load_program`
+/// - `model_index < vollo_rt_num_models`
+/// - `input_index < vollo_rt_model_num_inputs`
+number_format vollo_rt_model_input_format(
+  vollo_rt_context_t vollo, size_t model_index, size_t input_index);
+
+/// Get the number type of an output at the given index
+///
+/// Requirements (panics otherwise):
+/// - a program was loaded with `vollo_rt_load_program`
+/// - `model_index < vollo_rt_num_models`
+/// - `output_index < vollo_rt_model_num_outputs`
+number_format vollo_rt_model_output_format(
+  vollo_rt_context_t vollo, size_t model_index, size_t output_index);
+
+/// Returns whether the model can be reset to its initial state (i.e. was compiled with
+/// `generate_state_reset = True`)
+///
+/// Requirements (panics otherwise):
+/// - a program was loaded with `vollo_rt_load_program`
+/// - `model_index < vollo_rt_num_models`
+bool vollo_rt_model_is_resettable(vollo_rt_context_t vollo, size_t model_index);
+
 /// Sets up a computation on the vollo accelerator where the inputs and outputs are in brain-float
 /// 16 format.
 ///
 /// Note: The computation is only started on the next call to vollo_rt_poll. This way it is possible
 /// to set up several computations that are kicked off at the same time.
+/// This is not supported on Vollo Trees (it only supports fp32 activations)
 ///
 /// - vollo:
 ///     the context that the computation should be run on
@@ -209,7 +376,7 @@ int vollo_rt_model_output_streaming_dim(
 ///     number of inputs is given by `vollo_rt_model_num_inputs` each input length is the product of
 ///     the shape given by `vollo_rt_model_input_shape`
 ///     (or more convenient: `vollo_rt_model_input_num_elements`)
-///     lifetime:
+///     - lifetime:
 ///       - The outer array only needs to live until `vollo_rt_add_job_bf16` returns
 ///       - The input buffers need to live until `vollo_rt_poll` returns with the completion for
 ///         this job
@@ -218,7 +385,7 @@ int vollo_rt_model_output_streaming_dim(
 ///     buffer the number of outputs is given by `vollo_rt_model_num_outputs` each output length is
 ///     the product of the shape given by `vollo_rt_model_output_shape`
 ///     (or more convenient: `vollo_rt_model_output_num_elements`)
-///     lifetime:
+///     - lifetime:
 ///       - The outer array only needs to live until `vollo_rt_add_job_bf16` returns
 ///       - The output buffers need to live until `vollo_rt_poll` returns with the completion for
 ///         this job
@@ -232,9 +399,11 @@ vollo_rt_error_t vollo_rt_add_job_bf16(
 /// Sets up a computation on the vollo accelerator where the inputs and outputs are in fp32 format.
 ///
 /// Note:
-/// - The computation will still be performed in bf16 but the driver will perform the conversion.
-/// - The environment variable `VOLLO_FP32_ROUND` can be used to round input when converting
-///   instead of truncating (which is faster).
+/// - The computation will be performed in the model's native number format. The driver will
+///   perform the conversion if the model uses a different format.
+/// - By default the input is rounded to bf16 using the round-to-nearest-even rounding mode.
+///   To disable rounding of the input and truncate instead, set the environment variable
+///   `VOLLO_FP32_ROUND` to 0.
 /// - The computation is only started on the next call to vollo_rt_poll. This way it is possible
 ///   to set up several computations that are kicked off at the same time.
 ///
@@ -252,7 +421,7 @@ vollo_rt_error_t vollo_rt_add_job_bf16(
 ///     number of inputs is given by `vollo_rt_model_num_inputs` each input length is the product of
 ///     the shape given by `vollo_rt_model_input_shape`
 ///     (or more convenient: `vollo_rt_model_input_num_elements`)
-///     lifetime:
+///     - lifetime:
 ///       - The outer array only needs to live until `vollo_rt_add_job_fp32` returns
 ///       - The input buffers need to live until `vollo_rt_poll` returns with the completion for
 ///         this job
@@ -261,7 +430,7 @@ vollo_rt_error_t vollo_rt_add_job_bf16(
 ///     buffer the number of outputs is given by `vollo_rt_model_num_outputs` each output length is
 ///     the product of the shape given by `vollo_rt_model_output_shape`
 ///     (or more convenient: `vollo_rt_model_output_num_elements`)
-///     lifetime:
+///     - lifetime:
 ///       - The outer array only needs to live until `vollo_rt_add_job_fp32` returns
 ///       - The output buffers need to live until `vollo_rt_poll` returns with the completion for
 ///         this job
@@ -272,6 +441,56 @@ vollo_rt_error_t vollo_rt_add_job_fp32(
   const float* const* input_data,
   float* const* output_data);
 
+/// Sets up a computation on the vollo accelerator where the inputs and outputs number formats are
+/// specified. If the number format differs from the model's native format, conversion will be
+/// performed on the CPU.
+///
+/// The model's native number format can be queried with `vollo_rt_model_input_format` and
+/// `vollo_rt_model_output_format`.
+/// Only fp32 inputs and output are supported on Vollo Trees.
+///
+/// Note:
+/// - The computation is only started on the next call to vollo_rt_poll. This way it is possible
+///   to set up several computations that are kicked off at the same time.
+///
+/// - vollo:
+///     the context that the computation should be run on
+/// - model_index:
+///     the model to run
+/// - user_ctx:
+///     a user context that will be returned on completion. This can be used to disambiguate when
+///     multiple models are running concurrently.
+///     NOTE: the jobs for a single model are guaranteed to come back in order, but the jobs for
+///     different models are not.
+/// - input_data:
+///     A pointer to the start of an array with pointers to the start of the data to each input.
+///     The number of inputs is given by `vollo_rt_model_num_inputs`. Each input length is the
+///     product of the shape given by `vollo_rt_model_input_shape` (or more convenient:
+///     `vollo_rt_model_input_num_elements`). The number format of each input is given by
+///     `vollo_rt_model_input_format`.
+///     - lifetime:
+///       - The outer array only needs to live until `vollo_rt_add_job` returns
+///       - The input buffers need to live until `vollo_rt_poll` returns with the completion for
+///         this job
+/// - output_data:
+///     A pointer to the start of an array with pointers to the start of the data to each output
+///     buffer. The number of outputs is given by `vollo_rt_model_num_outputs`. Each output length
+///     is the product of the shape given by `vollo_rt_model_output_shape`
+///     (or more convenient: `vollo_rt_model_output_num_elements`). The number format of each
+///     output is given by `vollo_rt_model_output_format`.
+///     lifetime:
+///       - The outer array only needs to live until `vollo_rt_add_job` returns
+///       - The output buffers need to live until `vollo_rt_poll` returns with the completion for
+///         this job
+vollo_rt_error_t vollo_rt_add_job(
+  vollo_rt_context_t vollo,
+  size_t model_index,
+  uint64_t user_ctx,
+  const number_format* input_number_format,
+  const void* const* input_data,
+  const number_format* output_number_format,
+  void* const* output_data);
+
 /// Sets up a computation on the vollo accelerator where the inputs and outputs are in brain-float
 /// 16 format.
 ///
@@ -281,7 +500,10 @@ vollo_rt_error_t vollo_rt_add_job_fp32(
 /// Limitations:
 /// - Only single model programs are supported
 /// - Only single input models are supported
-/// - Only inputs with up to 65536 elements supported (for now)
+/// - A full update must be queued before the first partial update
+///
+/// For a more general version that supports different data types and multiple inputs, see
+/// `vollo_rt_add_job_partial_update`.
 ///
 /// Note: The computation is only started on the next call to vollo_rt_poll. This way it is possible
 /// to set up several computations that are kicked off at the same time.
@@ -329,23 +551,97 @@ vollo_rt_error_t vollo_rt_add_job_bf16_partial_update(
   const bf16* input_update_values,
   bf16* const* output_data);
 
+/// Sets up a computation on the vollo accelerator inputs of brain-float 16 or fp32 and outputs of
+/// brain-float 16 or fp32.
+///
+/// Takes the input from the previous job and updates individual values as provided and uses that as
+/// the new input. This can be more efficient due to smaller IO requirements.
+///
+/// Limitations:
+/// - Only single model programs are supported
+/// - A full update must be queued before the first partial update
+///
+/// Note: The computation is only started on the next call to vollo_rt_poll. This way it is possible
+/// to set up several computations that are kicked off at the same time.
+///
+/// - vollo:
+///     the context that the computation should be run on
+/// - model_index:
+///     the model to run
+/// - user_ctx:
+///     a user context that will be returned on completion
+/// - num_input_updates:
+///     The number of update entries in the input_partial_updates array
+///     It MUST be at most the number of model inputs (see `vollo_rt_model_num_inputs`),
+///     although using `vollo_rt_add_job_bf16` will be more efficient when updating many elements
+/// - input_partial_updates:
+///     An array of partial_update_input structs (with `num_input_updates` elements) describing
+///     the updates to perform
+///     Each struct contains:
+///     - input_arg_num:
+///         The network argument number to update.
+///     - num_updates:
+///         The number of values to update
+///     - update_indices:
+///         An array of indices (with `num_updates` elements) of the elements to update
+///         Each index MUST be less than the number of input elements
+///         (see `vollo_rt_model_input_num_elements`)
+///         Updating multiple times the same index in a given update has undefined semantics
+///     - lifetime:
+///       - The input_update_indices array needs to live until `vollo_rt_poll` returns with the
+///         completion for this job
+/// - output_data:
+///     A pointer to the start of an array with pointers to the start of the data to each output
+///     buffer. The number of outputs is given by `vollo_rt_model_num_outputs`. Each output length
+///     is the product of the shape given by `vollo_rt_model_output_shape` (or more convenient:
+///     `vollo_rt_model_output_num_elements`). The type of each output buffer is given by
+///     `vollo_rt_model_output_type`.
+///     - lifetime:
+///       - The outer array only needs to live until `vollo_rt_add_job_bf16_partial_update` returns
+///       - The output buffers need to live until `vollo_rt_poll` returns with the completion for
+///         this job
+vollo_rt_error_t vollo_rt_add_job_partial_update(
+  vollo_rt_context_t vollo,
+  size_t model_index,
+  uint64_t user_ctx,
+  uint32_t num_input_updates,
+  const partial_update_input* input_partial_updates,
+  void* const* output_data);
+
+/// Resets a model to its initial state.
+///
+/// Unlike `vollo_rt_add_job`, this function does not take in a `user_ctx`, because there is no
+/// output to receive. Consequently, `vollo_rt_poll` will not notify you when a reset job is
+/// done, but it will be done before any subsequent jobs for that model.
+///
+/// Note: The reset is only started on the next call to `vollo_rt_poll`. This way it is possible
+/// to set up several computations that are kicked off at the same time. Reset jobs are in the
+/// same queue as regular jobs.
+///
+/// - vollo:
+///     the context that the model should be reset on
+/// - model_index:
+///     the model to reset
+///
+/// Requirements (panics otherwise):
+/// - a program was loaded with `vollo_rt_load_program`
+/// - `model_index < vollo_rt_num_models`
+/// - the model was compiled with `generate_state_reset = True`
+vollo_rt_error_t vollo_rt_add_reset_job(vollo_rt_context_t vollo, size_t model_index);
+
 /// Poll the vollo accelerator for completion.
 ///
-/// Note: Polling also initiates transfers for new jobs, so poll must be called
-/// before any progress on these new jobs can be made.
+/// Note: Polling also initiates transfers for new jobs, so poll must be called before any progress
+/// on these new jobs can be made. Multiple polls may be necessary for a single job to complete.
 ///
 ///   num_completed: out: the number of completed user_ctx returned
 ///   returned_user_ctx: buffer for the returned user_ctx of completed jobs, this will only be
 ///                      valid until the next call to vollo_rt_poll.
-///
-/// Larger IO might be split over multiple calls to `vollo_rt_poll`. Since the optimal chunking
-/// size depends on the program and the system Vollo is running on, the maximum chunk size is
-/// configurable when loading a program with environment variables `VOLLO_IN_MAX_CHUNK_SIZE`
-/// and `VOLLO_OUT_MAX_CHUNK_SIZE` (both default to 8192 values)
 vollo_rt_error_t vollo_rt_poll(
   vollo_rt_context_t vollo, size_t* num_completed, const uint64_t** returned_user_ctx);
 
-/// Get access to a raw DMA buffer for a number of bf16 elements
+/// Get access to a raw DMA buffer for a number of bf16 elements. This function may be deprecated
+/// in the future in favor of `vollo_rt_get_raw_buffer_bytes`.
 ///
 /// This buffer can be used as either an input or an output buffer in `vollo_rt_add_job_bf16`.
 /// When such a buffer is used, the DMA will use the buffer directly without first copying the data.
@@ -365,5 +661,53 @@ vollo_rt_error_t vollo_rt_poll(
 /// - All allocated raw buffers are freed when destroying the `vollo_rt_context_t` with
 /// `vollo_rt_destroy`
 bf16* vollo_rt_get_raw_buffer(vollo_rt_context_t vollo, size_t num_elements);
+
+/// Get access to a raw DMA buffer for a number of bytes.
+///
+/// This buffer can be used as either an input or an output buffer in `vollo_rt_add_job` and
+/// friends. When such a buffer is used, the DMA will use the buffer directly without first copying
+/// the data. Raw buffers can be reused for multiple inferences.
+///
+/// Note:
+/// - A job using a raw buffer MUST use the exact base pointer returned by
+/// `vollo_rt_get_raw_buffer_bytes`
+///   (not an offset within the allocation, because the allocation has specific alignment and
+///   padding requirements for the DMA engine)
+/// - Once submitted, a raw buffer MUST NOT be read from or written to until after the completion of
+///   the job it is used in
+/// - An output raw buffer MUST NOT be used concurrently from multiple jobs or the same job
+///   (multiple outputs reusing the same buffer)
+/// - A raw buffer MAY be allocated for more elements than needed
+///   For example if the buffer is to be reused for different jobs with different requirements
+/// - The amount of memory that can be allocated with `vollo_rt_get_raw_buffer_bytes` can be
+///   increased by setting `VOLLO_DMA_ALLOC_SIZE_MB` environment variable.
+/// - All allocated raw buffers are freed when destroying the `vollo_rt_context_t` with
+/// `vollo_rt_destroy`
+void* vollo_rt_get_raw_buffer_bytes(vollo_rt_context_t vollo, size_t num_bytes);
+
+/// Setup a completion check single output of a raw buffer. You can then check for completion for
+/// the next job this buffer is used in using `vollo_rt_check_raw_buffer_output_completion`. This
+/// can be called from a different thread than the one containing the `vollo_rt_context`.
+///
+/// This must be called before submitting the job using this buffer. The `transfer_size_bytes` must
+/// match the number of bytes of the output this buffer is used for. After calling this, you must
+/// not modify this buffer until after the corresponding job has been polled to completion.
+///
+/// This is an experimental API and may be removed or changed in the future.
+void vollo_rt_prepare_raw_buffer_output_completion(void* buffer, size_t transfer_size_bytes);
+
+/// Check if the output for this buffer is complete. This check can be performed on a different
+/// thread than the one containing the vollo_rt_context. If you have multiple outputs, this may
+/// return before other outputs are complete.
+///
+/// You first need to call `vollo_rt_prepare_raw_buffer_output_completion` on this output buffer
+/// before submitting the job using this buffer.
+///
+/// Once this returns true, the output for this buffer data can be used. The buffer itself is still
+/// owned by the vollo_rt_context and cannot be reused or registered for completion again until the
+/// poll on vollo_rt_context marks the job as complete.
+///
+/// This is an experimental API and may be changed or removed in the future.
+bool vollo_rt_check_raw_buffer_output_completion(const void* buffer, size_t transfer_size_bytes);
 
 }  // extern "C"

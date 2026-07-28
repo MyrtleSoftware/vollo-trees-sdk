@@ -1,4 +1,4 @@
-# Vollo Compiler
+# Vollo Trees Compiler
 
 The `vollo-trees-compiler` Python library can compile an ONNX `TreeEnsembleRegressor` model
 to a Vollo program (`.vollo` file). It also provides functionality to estimate the performance of
@@ -14,14 +14,15 @@ should cover the most commonly used parts of the API.
 
 <!-- markdown-link-check-disable -->
 
-A more complete API reference can be found [here](./api-reference).
+Here is a more complete [API reference](./api-reference).
 
 <!-- markdown-link-check-enable -->
 
 ## Installation
 
 Set up Vollo environment variables by [sourcing
-`setup.sh`](accelerator-setup.md#environment-variable-setup) in `bash`.
+`setup.sh`](accelerator-setup.md#environment-variable-setup) in `bash`
+from the Vollo Trees SDK root directory.
 
 Install the wheel file for the Vollo Trees compiler library. It's recommended that
 you install this into a [virtual
@@ -33,5 +34,5 @@ Note: the packaged wheel only supports python 3.7 or greater
 python3 -m venv vollo-venv
 source vollo-venv/bin/activate
 pip install --upgrade pip
-pip install "$VOLLO_SDK"/python/*.whl
+pip install "$VOLLO_TREES_SDK"/python/*.whl
 ```

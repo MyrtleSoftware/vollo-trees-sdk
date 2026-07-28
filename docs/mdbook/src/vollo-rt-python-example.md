@@ -18,13 +18,12 @@ with vollo_rt.VolloRTContext() as ctx:
     ctx.add_accelerator(0)
 
     if ctx.accelerator_num_cores(0) == 128:
-        ctx.load_program(f"{os.environ["VOLLO_TREES_SDK"]}/example/single-decsision-u128.vollo")
+        ctx.load_program(f"{os.environ['VOLLO_TREES_SDK']}/example/single-decision-u128.vollo")
     else:
-        ctx.load_program(f"{os.environ["VOLLO_TREES_SDK"]}/example/single-decision-u256.vollo")
+        ctx.load_program(f"{os.environ['VOLLO_TREES_SDK']}/example/single-decision-u256.vollo")
 
-    input = torch.rand(*ctx.model_input_shape()).bfloat16()
+    input = torch.rand(*ctx.model_input_shape())
     output = ctx.run(input)
 
-    torch.testing.assert_close(input, output)
-    print("Success!")
+    print(f"Output: {output}")
 ```
