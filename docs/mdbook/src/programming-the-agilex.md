@@ -1,4 +1,4 @@
-# Programming the FPGA
+# Programming the Agilex FPGA
 
 ## Programming the FPGA via JTAG
 
@@ -64,13 +64,13 @@ require a USB programming cable or for Quartus Programmer to be installed.
     minutes. For the IA840F:
 
     ```sh
-    quartus_pgm -c "IA-840F [1-5.2]" -m JTAG -o "ipv;vollo-ia840f-u256d8192.jic"
+    quartus_pgm -c "IA-840F [1-5.2]" -m JTAG -o "ipv;vollo-bittware-ia840f-u256d8192.jic"
     ```
 
     Or for IA420F:
 
     ```sh
-    quartus_pgm -c "IA-420F [1-5.2]" -m JTAG -o "ipv;vollo-ia420f-u128d8192.jic"
+    quartus_pgm -c "IA-420F [1-5.2]" -m JTAG -o "ipv;vollo-bittware-ia420f-u128d8192.jic"
     ```
 
 8. Go back to 6 and program any other devices.

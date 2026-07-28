@@ -17,13 +17,13 @@ The Vollo Trees compiler execution time is typically on the order of
 seconds, enabling fast model iteration for tuning models to meet a latency
 target.
 
-To estimate performance of your model with the Vollo SDK:
+To estimate performance of your model with the Vollo Trees SDK:
 
-1. [Download and extract](installation.md) the Vollo SDK.
+1. [Download and extract](installation.md) the Vollo Trees SDK.
 
 2. [Install the Vollo Trees compiler](vollo-trees-compiler.md#installation) Python libraries.
 
-3. Compile your model using the Vollo-rtees compiler and evaluate the compiled program
+3. Compile your model using the Vollo Trees compiler and evaluate the compiled program
    on inference data to generate a compute latency estimate
    that will be achieved with Vollo Trees.
 
@@ -49,15 +49,15 @@ To validate inference performance on Vollo Trees:
 
 <!-- markdownlint-disable MD029 -->
 
-6. Follow the steps to [program](programming-the-fpga.md) and
-   [license](licensing.md) the FPGA.
+5. Follow the steps to program the [Intel Agilex](programming-the-agilex.md) or
+   [AMD V80](programming-the-v80.md) and [license](licensing.md) the FPGA.
 
-7. Compile your model and save it as a `.vollo` program file using the Vollo Trees
+6. Compile your model and save it as a `.vollo` program file using the Vollo Trees
    compiler.
 
    See Vollo Trees compiler [Example](example-compiler.md) for a fully worked example.
 
-8. Run and benchmark your model on the accelerator using [the Vollo runtime C
+7. Run and benchmark your model on the accelerator using [the Vollo runtime C
    example](running-an-example.md).
 
    Make sure to pass the example application the path to your saved `.vollo`

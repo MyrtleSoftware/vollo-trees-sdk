@@ -39,10 +39,10 @@ onnx_model = convert_sklearn(
 with open("sklearn_model.onnx", "wb") as f:
   f.write(onnx_model.SerializeToString())
 
-config = vtc.Config.ia420f_u128()
+config = vtc.Config.amd_v80_u256()
 
 forest = vtc.Forest.from_onnx("sklearn_model.onnx")
-program = forest.to_program_bf16(config)
+program = forest.to_program_f32(config)
 program.save("sklearn_model.vollo")
 ```
 

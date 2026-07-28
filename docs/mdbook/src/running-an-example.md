@@ -5,8 +5,8 @@ The Vollo Trees SDK contains a trivial program for each accelerator to check if 
 1. Ensure you have run the setup steps:
 
    ```sh
-   cd <vollo-sdk>
-   sudo ./load_kernel_driver.sh
+   cd <vollo-trees-sdk>
+   sudo ./load-kernel-driver.sh
    source setup.sh
    export MYRTLE_LICENSE=<your-license-file>
    ```
@@ -19,16 +19,8 @@ The Vollo Trees SDK contains a trivial program for each accelerator to check if 
 
 3. Run the example.
 
-   For a block-size 64 accelerator such as `vollo-ia840f-u256.jic`:
-
    ```sh
    ./example/vollo-example example/single-decision-u256.vollo
-   ```
-
-   For a block-size 32 accelerator such as `vollo-ia420f-u128d8192.jic`:
-
-   ```sh
-   ./example/vollo-example example/single-decision-u128.vollo
    ```
 
    You should see an output similar to the following:

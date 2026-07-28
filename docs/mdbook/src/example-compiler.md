@@ -79,15 +79,15 @@ forest = vtc.Forest.from_onnx(model_path)
 The `Forest` can be compiled to a Vollo program given a `vollo_trees_compiler.Config` accelerator configuration.
 
 ```python
-config = vtc.Config.ia420f_u128()
-program_bf16 = forest.to_program_bf16(config)
+config = vtc.Config.amd_v80_u256()
+program_f32 = forest.to_program_f32(config)
 ```
 
 Save the program to a file so that it can be used for inference by the [Vollo
 runtime](vollo-runtime.md).
 
 ```python
-program_bf16.save('example.vollo')
+program_f32.save('example.vollo')
 ```
 
 ## Simulation
@@ -96,11 +96,6 @@ The Vollo Trees compiler can be used to evaluate a program on a given input whic
 
 - Estimate the performance of a model. Optionally, a cycle count can be returned with the evaluation output.
 - Verify the correctness of the compilation stages, including the effect of quantisation.
-
-A `vollo_trees_compiler.Forest` can instead be converted to a `f32` program. This way, the comparators and inputs will not
-be quantized to `bf16`, which can be useful for testing against other inference measures (e.g. `onnxruntime`). Note however that the `f32` program cannot be used with the [Vollo runtime](vollo-runtime.md).
-
-The program can then be evaluated on an input to determine the output value and estimate the cycle count.
 
 ```python
 program_f32 = forest.to_program_f32(config)
@@ -122,11 +117,9 @@ pessimistic_estimate = program_f32.pessimistic_cycle_estimate()
 print(f"Pessimistic cycle estimate: {pessimistic_estimate}")
 ```
 
-This evaluation can also be performed on the `bf16` quantized version of the program.
-
 Note there will be some discrepancy between the estimated cycle count and the true
 cycle count.
 Also note that this estimate does not model the latency of the communication between
-the host and the Vollo accelerator. The [`single-decision-t1-d1-f32` benchmark](benchmark.md) the
+the host and the Vollo accelerator. The [`single-decision-t1-d1-f32` benchmark](benchmark.md) measures the
 round-trip latency for the smallest possible program. This can be added to the cycle count estimate
 (accounting for the FPGA clock rate of 400mhz) to give an estimate for the overall latency of the model.

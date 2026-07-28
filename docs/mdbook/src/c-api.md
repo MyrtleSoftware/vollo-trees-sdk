@@ -1,16 +1,22 @@
 # C API
 
+Make sure the `VOLLO_TREES_SDK` environment variable is set by sourcing setup.sh from the Vollo Trees SDK.
+
+```bash
+source <path-to-VOLLO_TREES_SDK>/setup.sh
+```
+
 The Vollo runtime API is a C API with simple types and functions in order to be
 straight forward to use from any language with a C FFI.
 
-- Header file: `$VOLLO_SDK/include/vollo-rt.h`
-- Dynamic library: `$VOLLO_SDK/lib/libvollo_rt.so`
-- Static library: `$VOLLO_SDK/lib/libvollo_rt.a`
+- Header file: `$VOLLO_TREES_SDK/include/vollo-rt.h`
+- Dynamic library: `$VOLLO_TREES_SDK/lib/libvollo_rt.so`
+- Static library: `$VOLLO_TREES_SDK/lib/libvollo_rt.a`
 
-It links against GLIBC (from version 2.27), contact us if you have other requirements.
+It was built against GLIBC version 2.17.
 
 To compile against Vollo RT with a standard C compiler, you can use the following flags:
-`-I $VOLLO_SDK/include -L $VOLLO_SDK/lib -lvollo_rt`
+`-I $VOLLO_TREES_SDK/include -L $VOLLO_TREES_SDK/lib -lvollo_rt`
 
 These are the main steps (in order) a program using `vollo_rt` will follow:
 
@@ -20,8 +26,7 @@ These are the main steps (in order) a program using `vollo_rt` will follow:
 3. Load a Vollo program onto the Vollo accelerators with `vollo_rt_load_program`
 4. Optionally, inspect the metadata about the models in the program using API calls such as
    `vollo_rt_num_models` and `vollo_rt_model_num_inputs`
-5. Queue and run inference jobs by first calling `vollo_rt_add_job_bf16` (or
-   `vollo_rt_add_job_fp32`) and then polling in a loop for their completion using `vollo_rt_poll`.
+5. Queue and run inference jobs by first calling `vollo_rt_add_job_fp32` (or `vollo_rt_add_job` with `number_format_fp32`), and then polling in a loop for their completion using `vollo_rt_poll`.
    You can queue several jobs before calling `vollo_rt_poll` or add extra jobs at any point.
 6. Finally call `vollo_rt_destroy` to release resources.
 
@@ -125,7 +130,12 @@ size_t vollo_rt_model_num_outputs(vollo_rt_context_t vollo, size_t model_index);
 /**
  * Get the shape for input at a given index
  *
- * The return value is a 0 terminated array of dims containing the input shape
+ * The return value is an array of dims containing the input shape
+ * Use `vollo_rt_model_input_shape_len` to get the number of axes in the shape.
+ *
+ * For backwards compatibility the array is also 0-terminated, but that should not be relied upon
+ * in order to correctly support shapes containing a 0 dimension
+ *
  * The value lives for as long as the model
  *
  * Requirements (panics otherwise):
@@ -137,9 +147,25 @@ const size_t* vollo_rt_model_input_shape(
   vollo_rt_context_t vollo, size_t model_index, size_t input_index);
 
 /**
+ * Get the number of axes in the shape for the input at a given index
+ *
+ * Requirements (panics otherwise):
+ * - a program was loaded with `vollo_rt_load_program`
+ * - `model_index < vollo_rt_num_models`
+ * - `input_index < vollo_rt_model_num_inputs`
+ */
+size_t vollo_rt_model_input_shape_len(
+  vollo_rt_context_t vollo, size_t model_index, size_t input_index);
+
+/**
  * Get the shape for output at a given index
  *
- * The return value is a 0 terminated array of dims containing the output shape
+ * The return value is an array of dims containing the output shape
+ * Use `vollo_rt_model_output_shape_len` to get the number of axes in the shape.
+ *
+ * For backwards compatibility the array is also 0-terminated, but that should not be relied upon
+ * in order to correctly support shapes containing a 0 dimension
+ *
  * The value lives for as long as the model
  *
  * Requirements (panics otherwise):
@@ -148,6 +174,17 @@ const size_t* vollo_rt_model_input_shape(
  * - `output_index < vollo_rt_model_num_outputs`
  */
 const size_t* vollo_rt_model_output_shape(
+  vollo_rt_context_t vollo, size_t model_index, size_t output_index);
+
+/**
+ * Get the number of axes in the shape for the output at a given index
+ *
+ * Requirements (panics otherwise):
+ * - a program was loaded with `vollo_rt_load_program`
+ * - `model_index < vollo_rt_num_models`
+ * - `output_index < vollo_rt_model_num_outputs`
+ */
+size_t vollo_rt_model_output_shape_len(
   vollo_rt_context_t vollo, size_t model_index, size_t output_index);
 
 /**
@@ -179,35 +216,25 @@ size_t vollo_rt_model_output_num_elements(
   vollo_rt_context_t vollo, size_t model_index, size_t output_index);
 
 /**
- * In a streaming model, the streaming dimension is not part of the shape.
- *
- * - It returns -1 when there is no streaming dimension
- * - It otherwise returns the dim index
- *   For example, for a shape `(a, b, c)` and streaming dim index 1, the full shape is:
- *   `(a, streaming_dim, b, c)`
+ * Get the number type of an input at the given index
  *
  * Requirements (panics otherwise):
  * - a program was loaded with `vollo_rt_load_program`
  * - `model_index < vollo_rt_num_models`
  * - `input_index < vollo_rt_model_num_inputs`
  */
-int vollo_rt_model_input_streaming_dim(
+number_format vollo_rt_model_input_format(
   vollo_rt_context_t vollo, size_t model_index, size_t input_index);
 
 /**
- * In a streaming model, the streaming dimension is not part of the shape.
- *
- * - It returns -1 when there is no streaming dimension
- * - It otherwise returns the dim index
- *   For example, for a shape `(a, b, c)` and streaming dim index 1, the full shape is:
- *   `(a, streaming_dim, b, c)`
+ * Get the number type of an output at the given index
  *
  * Requirements (panics otherwise):
  * - a program was loaded with `vollo_rt_load_program`
  * - `model_index < vollo_rt_num_models`
  * - `output_index < vollo_rt_model_num_outputs`
  */
-int vollo_rt_model_output_streaming_dim(
+number_format vollo_rt_model_output_format(
   vollo_rt_context_t vollo, size_t model_index, size_t output_index);
 ```
 
@@ -217,25 +244,20 @@ The interface returns results asynchronously so that inference requests can be m
 as the system can support, without blocking on output data being returned. This way, it also
 supports running multiple requests concurrently.
 Before any compute is started a job with associated input and output buffers needs to be
-registered with the runtime using one of `vollo_rt_add_job_bf16` or `vollo_rt_add_job_fp32`.
-
-The `bf16` variant uses [`bfloat16`](https://cloud.google.com/tpu/docs/bfloat16)
-which is effectively a cropped version of single precision floating point format
-`fp32` (same exponent, smaller mantissa).
-Note: do NOT use C floating point literals for `bf16` as it is simply a `uint16_t` in the API
-
-A `fp32` variant is also provided despite the Vollo accelerator expecting its
-inputs and outputs to be in `fp16`. If you are working with `fp32`, prefer
-this version instead of the `bf16` variant as it is able to make the conversion
-while copying to/from DMA buffers, avoiding an extra copy.
+registered with the runtime using `vollo_rt_add_job_fp32` or `vollo_rt_add_job` with `number_format_fp32`, since Vollo Trees is FP32 only.
 
 ```c
 /**
- * Sets up a computation on the vollo accelerator where the inputs and outputs are in brain-float 16
- * format.
+ * Sets up a computation on the vollo accelerator where the inputs and outputs are in fp32 format.
  *
- * Note: The computation is only started on the next call to vollo_rt_poll. This way it is possible
- * to set up several computations that are kicked off at the same time.
+ * Note:
+ * - The computation will be performed in the model's native number format. The driver will
+ *   perform the conversion if the model uses a different format.
+ * - By default, if the input is rounded to bf16, it will be using the round-to-nearest-even rounding mode.
+ *   To disable rounding of the input and truncate instead, set the environment variable
+ * `VOLLO_FP32_ROUND` to 0.
+ * - The computation is only started on the next call to vollo_rt_poll. This way it is possible
+ *   to set up several computations that are kicked off at the same time.
  *
  * - vollo:
  *     the context that the computation should be run on
@@ -251,8 +273,8 @@ while copying to/from DMA buffers, avoiding an extra copy.
  *     number of inputs is given by `vollo_rt_model_num_inputs` each input length is the product of
  *     the shape given by `vollo_rt_model_input_shape`
  *     (or more convenient: `vollo_rt_model_input_num_elements`)
- *     lifetime:
- *       - The outer array only needs to live until `vollo_rt_add_job_bf16` returns
+ *     - lifetime:
+ *       - The outer array only needs to live until `vollo_rt_add_job_fp32` returns
  *       - The input buffers need to live until `vollo_rt_poll` returns with the completion for
  *         this job
  * - output_data:
@@ -260,24 +282,69 @@ while copying to/from DMA buffers, avoiding an extra copy.
  *     buffer the number of outputs is given by `vollo_rt_model_num_outputs` each output length is
  *     the product of the shape given by `vollo_rt_model_output_shape`
  *     (or more convenient: `vollo_rt_model_output_num_elements`)
- *     lifetime:
- *       - The outer array only needs to live until `vollo_rt_add_job_bf16` returns
+ *     - lifetime:
+ *       - The outer array only needs to live until `vollo_rt_add_job_fp32` returns
  *       - The output buffers need to live until `vollo_rt_poll` returns with the completion for
  *         this job
  */
-vollo_rt_error_t vollo_rt_add_job_bf16(
-  vollo_rt_context_t vollo,
-  size_t model_index,
-  uint64_t user_ctx,
-  const bf16* const* input_data,
-  bf16* const* output_data);
-
 vollo_rt_error_t vollo_rt_add_job_fp32(
   vollo_rt_context_t vollo,
   size_t model_index,
   uint64_t user_ctx,
   const float* const* input_data,
   float* const* output_data);
+
+/**
+ * Sets up a computation on the vollo accelerator where the inputs and outputs number formats are
+ * specified. If the number format differs from the model's native format, conversion will be
+ * performed on the CPU.
+ *
+ * The model's native number format can be queried with `vollo_rt_model_input_format` and
+ * `vollo_rt_model_output_format`.
+ * Only fp32 inputs and output are supported on Vollo Trees.
+ *
+ * Note:
+ * - The computation is only started on the next call to vollo_rt_poll. This way it is possible
+ *   to set up several computations that are kicked off at the same time.
+ *
+ * - vollo:
+ *     the context that the computation should be run on
+ * - model_index:
+ *     the model to run
+ * - user_ctx:
+ *     a user context that will be returned on completion. This can be used to disambiguate when
+ *     multiple models are running concurrently.
+ *     NOTE: the jobs for a single model are guaranteed to come back in order, but the jobs for
+ *     different models are not.
+ * - input_data:
+ *     A pointer to the start of an array with pointers to the start of the data to each input.
+ *     The number of inputs is given by `vollo_rt_model_num_inputs`. Each input length is the
+ *     product of the shape given by `vollo_rt_model_input_shape` (or more convenient:
+ *     `vollo_rt_model_input_num_elements`). The number format of each input is given by
+ *     `vollo_rt_model_input_format`.
+ *     - lifetime:
+ *       - The outer array only needs to live until `vollo_rt_add_job` returns
+ *       - The input buffers need to live until `vollo_rt_poll` returns with the completion for
+ *         this job
+ * - output_data:
+ *     A pointer to the start of an array with pointers to the start of the data to each output
+ *     buffer. The number of outputs is given by `vollo_rt_model_num_outputs`. Each output length
+ *     is the product of the shape given by `vollo_rt_model_output_shape`
+ *     (or more convenient: `vollo_rt_model_output_num_elements`). The number format of each
+ *     output is given by `vollo_rt_model_output_format`.
+ *     lifetime:
+ *       - The outer array only needs to live until `vollo_rt_add_job` returns
+ *       - The output buffers need to live until `vollo_rt_poll` returns with the completion for
+ *         this job
+ */
+vollo_rt_error_t vollo_rt_add_job(
+  vollo_rt_context_t vollo,
+  size_t model_index,
+  uint64_t user_ctx,
+  const number_format* input_number_format,
+  const void* const* input_data,
+  const number_format* output_number_format,
+  void* const* output_data);
 ```
 
 To actually start and later complete an inference you must use the `vollo_rt_poll` function
