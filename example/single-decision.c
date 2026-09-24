@@ -1,5 +1,6 @@
 #include <assert.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <vollo-rt.h>
 
 // Helper to exit when an error is encountered
@@ -17,15 +18,25 @@
 static void single_shot_inference(vollo_rt_context_t ctx, const float* input, float* output) {
   size_t model_index = 0;
 
-  const float* inputs[1] = {input};
-  float* outputs[1] = {output};
+  const void* inputs[1] = {input};
+  void* outputs[1] = {output};
+
+  const number_format input_formats[1] = {number_format_fp32};
+  const number_format output_formats[1] = {number_format_fp32};
 
   // user_ctx is not needed when doing single shot inferences
   // it can be used when doing multiple jobs concurrently to keep track of which jobs completed
   uint64_t user_ctx = 0;
 
   // Register a new job
-  EXIT_ON_ERROR(vollo_rt_add_job_fp32(ctx, model_index, user_ctx, inputs, outputs));
+  EXIT_ON_ERROR(vollo_rt_add_job(
+    ctx,
+    model_index,
+    user_ctx,
+    input_formats,
+    (const void* const*)inputs,
+    output_formats,
+    (void* const*)outputs));
 
   // Poll until completion
   size_t num_completed = 0;
@@ -51,16 +62,32 @@ int main(void) {
   //////////////////////////////////////////////////
   // Add accelerators
   size_t accelerator_index = 0;
-  EXIT_ON_ERROR(vollo_rt_add_accelerator(ctx, accelerator_index));
+  const char* device_spec = getenv("VOLLO_CARD_BDF");
+  if (device_spec == NULL) {
+    device_spec = "0";
+  }
+  EXIT_ON_ERROR(vollo_rt_add_device(ctx, accelerator_index, device_spec));
 
   //////////////////////////////////////////////////
   // Load program
 
-  if (vollo_rt_accelerator_num_cores(ctx, accelerator_index) == 128) {
-    EXIT_ON_ERROR(vollo_rt_load_program(ctx, "./single-decision-u128.vollo"));
+  // The SDK ships the program compiled for each accelerator configuration it supports
+  size_t num_units = vollo_rt_accelerator_num_cores(ctx, accelerator_index);
+  const char* program_path;
+  if (num_units == 128) {
+    program_path = "./single-decision-u128.vollo";
+  } else if (num_units == 256) {
+    program_path = "./single-decision-u256.vollo";
+  } else if (num_units == 576) {
+    program_path = "./single-decision-u576.vollo";
   } else {
-    EXIT_ON_ERROR(vollo_rt_load_program(ctx, "./single-decision-u256.vollo"));
+    fprintf(
+      stderr,
+      "error: no single-decision program for an accelerator with %zu tree units\n",
+      num_units);
+    exit(EXIT_FAILURE);
   }
+  EXIT_ON_ERROR(vollo_rt_load_program(ctx, program_path));
 
   //////////////////////////////////////////////////
   // Setup inputs and outputs
@@ -73,6 +100,7 @@ int main(void) {
 
   assert(vollo_rt_model_input_num_elements(ctx, model_index, 0) == 32);
   assert(vollo_rt_model_output_num_elements(ctx, model_index, 0) == 1);
+  assert(vollo_rt_model_output_format(ctx, model_index, 0) == number_format_fp32);
 
   float input_tensor[32];
   float output_tensor[1];

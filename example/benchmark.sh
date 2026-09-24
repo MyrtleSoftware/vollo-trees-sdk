@@ -12,9 +12,12 @@ if [ -z "$VOLLO_TREES_SDK" ]; then
   exit 1
 fi
 
-info "creating work directory"
-mkdir -p work
-cd work
+# Where to put the venv, compiled programs and metrics
+WORKDIR="${WORKDIR:-work}"
+
+info "creating work directory $WORKDIR"
+mkdir -p "$WORKDIR"
+cd "$WORKDIR"
 
 if [ ! -d "vollo-venv" ]; then
   info "creating vollo-venv virtual environment"
@@ -37,7 +40,7 @@ chmod +w example
 ( cd example; make vollo-example)
 
 info "Getting hardware config for vollo device"
-"$VOLLO_TREES_SDK"/bin/vollo-tool read-hw-config | jq '.[0].hw_config' > hw_config.json
+"$VOLLO_TREES_SDK"/bin/vollo-tool read-hw-config "${VOLLO_CARD_BDF:-0}" | jq '.[0].hw_config' > hw_config.json
 
 echo "------------------------------------------------------------------"
 echo "-- COMPILING AND RUNNING BENCHMARK PROGRAMS ----------------------"

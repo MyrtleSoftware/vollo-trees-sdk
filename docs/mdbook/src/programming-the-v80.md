@@ -14,23 +14,23 @@ source <path-to-VOLLO_TREES_SDK>/setup.sh
 ## Download the bitstream for your FPGA
 
 The bitstream is available on the [Github Release page] alongside the Vollo Trees SDK. For example
-to download the bitstream for the AMD `V80` board with the `u256d8192` configuration of Vollo
+to download the bitstream for the AMD `V80` board with the `u576d8192` configuration of Vollo
 Trees:
 
 [Github Release page]: https://github.com/MyrtleSoftware/vollo-trees-sdk/releases/
 
 ```sh
-curl -LO https://github.com/MyrtleSoftware/vollo-trees-sdk/releases/download/v1.0.0/vollo-trees-amd-v80-u256d8192-1.0.tar.gz
+curl -LO https://github.com/MyrtleSoftware/vollo-trees-sdk/releases/download/v2.0.0/vollo-trees-amd-v80-u576d8192-2.0.tar.gz
 mkdir -p $VOLLO_TREES_SDK/bitstream
-tar -xzf vollo-trees-amd-v80-u256d8192-1.0.tar.gz -C $VOLLO_TREES_SDK/bitstream
+tar -xzf vollo-trees-amd-v80-u576d8192-2.0.tar.gz -C $VOLLO_TREES_SDK/bitstream
 ```
 
 Alternatively, for the AMD `V80LL`, use:
 
 ```sh
-curl -LO https://github.com/MyrtleSoftware/vollo-trees-sdk/releases/download/v1.0.0/vollo-trees-amd-v80ll-u256d8192-1.0.tar.gz
+curl -LO https://github.com/MyrtleSoftware/vollo-trees-sdk/releases/download/v2.0.0/vollo-trees-amd-v80ll-u576d8192-2.0.tar.gz
 mkdir -p $VOLLO_TREES_SDK/bitstream
-tar -xzf vollo-trees-amd-v80ll-u256d8192-1.0.tar.gz -C $VOLLO_TREES_SDK/bitstream
+tar -xzf vollo-trees-amd-v80ll-u576d8192-2.0.tar.gz -C $VOLLO_TREES_SDK/bitstream
 ```
 
 ## Programming the FPGA via JTAG
@@ -48,7 +48,7 @@ system so that the device can be programmed over JTAG.
 1. Download and install Vivado Lab Edition:
 
     - Navigate to the Vivado Design Tools [download page].
-    - Under "Vivado Lab Solutions" find "Vivado 2025.2: Lab Edition - Linux (TAR/GZIP - 1.99 GB)" (later versions may be available).
+    - Under "Vivado Lab Solutions" find "Vivado 2026.1: Lab Edition - Linux (TAR/GZIP - 1.99 GB)" (later versions may be available).
     - Download the file and extract it to a directory of your choice. You will need an AMD account
       to download the file. You can create an account for free.
     - Pick a location to install `Vivado_Lab`, e.g. `/opt/Xilinx`, a user directory like `~/Xilinx` is
@@ -75,16 +75,16 @@ system so that the device can be programmed over JTAG.
     - Check that installation was successful:
 
       ```sh
-      $ $VIVADO_DIR/2025.2/Vivado_Lab//bin/vivado_lab -version
-      Vivado Lab Edition v2025.2 (64-bit)
+      $ $VIVADO_DIR/2026.1/Vivado_Lab//bin/vivado_lab -version
+      Vivado Lab Edition v2026.1 (64-bit)
       ```
 
-2. Run the `flash_vollo-trees-amd-v80-u256d8192.tcl` script from the bitstream archive to program
+2. Run the `flash_vollo-trees-amd-v80-u576d8192.tcl` script from the bitstream archive to program
    the V80 board:
 
     ```sh
     cd $VOLLO_TREES_SDK/bitstream
-    sudo $VIVADO_DIR/2025.2/Vivado_Lab/bin/vivado_lab -mode batch -source ./flash_vollo-trees-amd-v80-u256d8192.tcl
+    sudo $VIVADO_DIR/2026.1/Vivado_Lab/bin/vivado_lab -mode batch -source ./flash_vollo-trees-amd-v80-u576d8192.tcl
     ```
 
    This prints out a lot of lines while programming and takes about 10 minutes.
@@ -145,7 +145,7 @@ programming over JTAG, and does not require a USB programming cable or for Vivad
    `ami_tool`). If you only have one board, `device_index` is `0`.
 
    ```sh
-   sudo $VOLLO_TREES_SDK/bin/vollo-tool fpga-config overwrite-partition ${device_index:?} $VOLLO_TREES_SDK/bitstream/vollo-trees-amd-v80-u256d8192.pdi USER_IMAGE
+   sudo $VOLLO_TREES_SDK/bin/vollo-tool fpga-config overwrite-partition ${device_index:?} $VOLLO_TREES_SDK/bitstream/vollo-trees-amd-v80-u576d8192.pdi USER_IMAGE
    ```
 
    There will be a progress bar and it should take around 5 minutes to program the flash. You will

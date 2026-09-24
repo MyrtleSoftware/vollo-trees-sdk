@@ -17,10 +17,9 @@ import os
 with vollo_rt.VolloRTContext() as ctx:
     ctx.add_accelerator(0)
 
-    if ctx.accelerator_num_cores(0) == 128:
-        ctx.load_program(f"{os.environ['VOLLO_TREES_SDK']}/example/single-decision-u128.vollo")
-    else:
-        ctx.load_program(f"{os.environ['VOLLO_TREES_SDK']}/example/single-decision-u256.vollo")
+    # The SDK ships the program compiled for each accelerator configuration it supports
+    num_units = ctx.accelerator_num_cores(0)
+    ctx.load_program(f"{os.environ['VOLLO_TREES_SDK']}/example/single-decision-u{num_units}.vollo")
 
     input = torch.rand(*ctx.model_input_shape())
     output = ctx.run(input)
