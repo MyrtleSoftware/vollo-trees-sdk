@@ -39,11 +39,11 @@ onnx_model = convert_sklearn(
 with open("sklearn_model.onnx", "wb") as f:
   f.write(onnx_model.SerializeToString())
 
-config = vtc.Config.amd_v80_u256()
+config = vtc.Config.amd_v80_u576()
 
 forest = vtc.Forest.from_onnx("sklearn_model.onnx")
 program = forest.to_program_f32(config)
 program.save("sklearn_model.vollo")
 ```
 
-See [the sklearn-onnx documentation](https://onnx.ai/sklearn-onnx/tutorial_1-5_external.html) for details on converting from `LightGBM`, `XGBoost` and `CatBoost` to ONNX.
+Vollo Trees supports both FP32 and FP64 leaves: a program's leaf result type is determined by the leaf type in the .onnx model file. See [the sklearn-onnx documentation](https://onnx.ai/sklearn-onnx/tutorial_1-5_external.html) for details on converting from `LightGBM`, `XGBoost` and `CatBoost` to ONNX.

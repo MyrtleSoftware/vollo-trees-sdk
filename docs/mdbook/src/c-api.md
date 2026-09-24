@@ -26,7 +26,7 @@ These are the main steps (in order) a program using `vollo_rt` will follow:
 3. Load a Vollo program onto the Vollo accelerators with `vollo_rt_load_program`
 4. Optionally, inspect the metadata about the models in the program using API calls such as
    `vollo_rt_num_models` and `vollo_rt_model_num_inputs`
-5. Queue and run inference jobs by first calling `vollo_rt_add_job_fp32` (or `vollo_rt_add_job` with `number_format_fp32`), and then polling in a loop for their completion using `vollo_rt_poll`.
+5. Queue and run inference jobs by first calling `vollo_rt_add_job` with `number_format_fp32` inputs and the model's output format (`vollo_rt_model_output_format`: `number_format_fp64` for models compiled from double-precision leaves, `number_format_fp32` otherwise), and then polling in a loop for their completion using `vollo_rt_poll`.
    You can queue several jobs before calling `vollo_rt_poll` or add extra jobs at any point.
 6. Finally call `vollo_rt_destroy` to release resources.
 
@@ -37,7 +37,9 @@ Any other crash is considered a bug and we would be very grateful if you could t
 ## Initialisation
 
 A vollo context is created by calling `vollo_rt_init`.
-Add an accelerator by using the `vollo_rt_add_accelerator` function.
+Add an accelerator by using the `vollo_rt_add_accelerator` function, or
+`vollo_rt_add_device` to name a card by its PCI address (see [hosts with more
+than one accelerator](accelerator-setup.md#hosts-with-more-than-one-accelerator)).
 
 ```c
 /**
@@ -244,56 +246,15 @@ The interface returns results asynchronously so that inference requests can be m
 as the system can support, without blocking on output data being returned. This way, it also
 supports running multiple requests concurrently.
 Before any compute is started a job with associated input and output buffers needs to be
-registered with the runtime using `vollo_rt_add_job_fp32` or `vollo_rt_add_job` with `number_format_fp32`, since Vollo Trees is FP32 only.
+registered with the runtime using `vollo_rt_add_job` with `number_format_fp32` inputs and the
+model's output format — Vollo Trees takes fp32 inputs and delivers each output as the exact
+64-bit fixed-point leaf sum converted once to the model's output format: `number_format_fp64`
+for models whose ONNX states its leaves in double precision (the ai.onnx.ml opset 3
+`*_as_tensor` attributes), `number_format_fp32` otherwise. Query it with
+`vollo_rt_model_output_format`; outputs requested in another format are converted from the
+native result on the CPU.
 
 ```c
-/**
- * Sets up a computation on the vollo accelerator where the inputs and outputs are in fp32 format.
- *
- * Note:
- * - The computation will be performed in the model's native number format. The driver will
- *   perform the conversion if the model uses a different format.
- * - By default, if the input is rounded to bf16, it will be using the round-to-nearest-even rounding mode.
- *   To disable rounding of the input and truncate instead, set the environment variable
- * `VOLLO_FP32_ROUND` to 0.
- * - The computation is only started on the next call to vollo_rt_poll. This way it is possible
- *   to set up several computations that are kicked off at the same time.
- *
- * - vollo:
- *     the context that the computation should be run on
- * - model_index:
- *     the model to run
- * - user_ctx:
- *     a user context that will be returned on completion. This can be used to disambiguate when
- *     multiple models are running concurrently.
- *     NOTE: the jobs for a single model are guaranteed to come back in order, but the jobs for
- *     different models are not.
- * - input_data:
- *     a pointer to the start of an array with pointers to the start of the data to each input the
- *     number of inputs is given by `vollo_rt_model_num_inputs` each input length is the product of
- *     the shape given by `vollo_rt_model_input_shape`
- *     (or more convenient: `vollo_rt_model_input_num_elements`)
- *     - lifetime:
- *       - The outer array only needs to live until `vollo_rt_add_job_fp32` returns
- *       - The input buffers need to live until `vollo_rt_poll` returns with the completion for
- *         this job
- * - output_data:
- *     a pointer to the start of an array with pointers to the start of the data to each output
- *     buffer the number of outputs is given by `vollo_rt_model_num_outputs` each output length is
- *     the product of the shape given by `vollo_rt_model_output_shape`
- *     (or more convenient: `vollo_rt_model_output_num_elements`)
- *     - lifetime:
- *       - The outer array only needs to live until `vollo_rt_add_job_fp32` returns
- *       - The output buffers need to live until `vollo_rt_poll` returns with the completion for
- *         this job
- */
-vollo_rt_error_t vollo_rt_add_job_fp32(
-  vollo_rt_context_t vollo,
-  size_t model_index,
-  uint64_t user_ctx,
-  const float* const* input_data,
-  float* const* output_data);
-
 /**
  * Sets up a computation on the vollo accelerator where the inputs and outputs number formats are
  * specified. If the number format differs from the model's native format, conversion will be
@@ -301,11 +262,15 @@ vollo_rt_error_t vollo_rt_add_job_fp32(
  *
  * The model's native number format can be queried with `vollo_rt_model_input_format` and
  * `vollo_rt_model_output_format`.
- * Only fp32 inputs and output are supported on Vollo Trees.
+ * Vollo Trees natively takes fp32 inputs and produces outputs in the model's own format: fp64
+ * when the ONNX model states its leaves in double precision, fp32 otherwise. bf16 inputs are
+ * widened losslessly, fp64 inputs are rejected, and outputs requested in another format are
+ * converted from the native result on the CPU.
  *
  * Note:
- * - The computation is only started on the next call to vollo_rt_poll. This way it is possible
- *   to set up several computations that are kicked off at the same time.
+ * - The computation may be started by this call, or only on the next call to vollo_rt_poll:
+ *   either way it is possible to set up several computations that are kicked off at the
+ *   same time.
  *
  * - vollo:
  *     the context that the computation should be run on

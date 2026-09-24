@@ -79,7 +79,7 @@ forest = vtc.Forest.from_onnx(model_path)
 The `Forest` can be compiled to a Vollo program given a `vollo_trees_compiler.Config` accelerator configuration.
 
 ```python
-config = vtc.Config.amd_v80_u256()
+config = vtc.Config.amd_v80_u576()
 program_f32 = forest.to_program_f32(config)
 ```
 

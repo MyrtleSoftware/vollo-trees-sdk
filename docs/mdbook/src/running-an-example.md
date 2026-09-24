@@ -20,15 +20,15 @@ The Vollo Trees SDK contains a trivial program for each accelerator to check if 
 3. Run the example.
 
    ```sh
-   ./example/vollo-example example/single-decision-u256.vollo
+   ./example/vollo-example example/single-decision-u576.vollo
    ```
 
    You should see an output similar to the following:
 
    ```sh
-   Using program: "example/single-decision-u256.vollo"
+   Using program: "example/single-decision-u576.vollo"
    Using vollo-rt version: 20.0.0
-   Using Vollo accelerator with 256 tree unit(s)
+   Using Vollo accelerator with 576 tree unit(s)
    Program metadata for model 0:
       1 input with shape: [32]
       1 output with shape: [1]

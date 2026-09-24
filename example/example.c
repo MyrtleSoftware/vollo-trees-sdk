@@ -334,6 +334,11 @@ static void vollo_example(ExampleOptions options) {
         = options.raw_buffer_api
             ? vollo_rt_get_raw_buffer_bytes(ctx, sizeof(float) * num_output_elems)
             : (void*)malloc(sizeof(float) * num_output_elems);
+    } else if (fmt == number_format_fp64) {
+      model_outputs_dyn[i]
+        = options.raw_buffer_api
+            ? vollo_rt_get_raw_buffer_bytes(ctx, sizeof(double) * num_output_elems)
+            : (void*)malloc(sizeof(double) * num_output_elems);
     } else {
       model_outputs_dyn[i] = options.raw_buffer_api
                                ? vollo_rt_get_raw_buffer_bytes(ctx, sizeof(bf16) * num_output_elems)
@@ -462,6 +467,9 @@ static void vollo_example(ExampleOptions options) {
               if (fmt == number_format_fp32) {
                 float* buf = (float*)model_outputs_dyn[j];
                 output_arrays[j].buffer[k] = buf[k];
+              } else if (fmt == number_format_fp64) {
+                double* buf = (double*)model_outputs_dyn[j];
+                output_arrays[j].buffer[k] = (float)buf[k];
               } else {
                 bf16* buf = (bf16*)model_outputs_dyn[j];
                 output_arrays[j].buffer[k] = bf16_to_float(buf[k]);
@@ -603,8 +611,8 @@ void print_help(const char* example_program) {
     "OPTIONS:\n"
     "    -d, --device\n"
     "        Device specifier to pass to vollo-rt\n"
-    "        Examples: 0, 01:00.0\n"
-    "        Defaults to 0\n"
+    "        Examples: 0, 0.3 (VF 3 of accelerator 0), 01:00.0\n"
+    "        Defaults to $VOLLO_CARD_BDF if set, otherwise 0\n"
     "\n"
 
     "    -m, --model-index\n"
@@ -714,7 +722,7 @@ int main(int argc, char** argv) {
 
   ExampleOptions options;
   options.program_path = "";
-  options.device_spec = "0";
+  options.device_spec = default_device_spec();
   options.model_index = 0;
   options.fp32_api = false;
   options.bf16_api = false;

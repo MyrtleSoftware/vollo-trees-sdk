@@ -113,12 +113,13 @@ NOTE: this can only be done with an FPGA that is already programmed with a Vollo
    ```
 
 3. Check that the device is set up for remote system updates by running the
-   command below, with `device index` representing the index of the device you
-   want to update, in the order shown in the previous command, starting from 0.
-   It should print a `json` string to the terminal showing the device status.
+   command below, with `device` representing the device you want to update:
+   either its PCI address, or its index in the order shown in the previous
+   command, starting from 0. It should print a `json` string to the terminal
+   showing the device status.
 
    ```sh
-   bin/vollo-tool fpga-config rsu-status <device index>
+   bin/vollo-tool fpga-config rsu-status <device>
    ```
 
 4. Update the `USER_IMAGE` partition of the flash with the new bitstream image
@@ -127,7 +128,7 @@ NOTE: this can only be done with an FPGA that is already programmed with a Vollo
 
    ```sh
    sudo ./load-kernel-driver.sh
-   bin/vollo-tool fpga-config overwrite-partition <device index> <.rpd.tar.gz file> USER_IMAGE
+   bin/vollo-tool fpga-config overwrite-partition <device> <.rpd.tar.gz file> USER_IMAGE
    ```
 
 5. Repeat step 4 for any other devices you wish to update.

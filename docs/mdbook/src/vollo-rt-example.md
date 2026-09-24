@@ -41,8 +41,8 @@ Then we load a program:
 //////////////////////////////////////////////////
 // Load program
 
-// Program for a 256-unit accelerator
-const char* vollo_program_path = "./single-decision-u256.vollo";
+// Program for a 576-unit accelerator
+const char* vollo_program_path = "./single-decision-u576.vollo";
 EXIT_ON_ERROR(vollo_rt_load_program(ctx, vollo_program_path));
 ```
 
@@ -98,15 +98,25 @@ inference on top of the asynchronous Vollo RT API:
 static void single_shot_inference(vollo_rt_context_t ctx, const float* input, float* output) {
   size_t model_index = 0;
 
-  const float* inputs[1] = {input};
-  float* outputs[1] = {output};
+  const void* inputs[1] = {input};
+  void* outputs[1] = {output};
+
+  const number_format input_formats[1] = {number_format_fp32};
+  const number_format output_formats[1] = {number_format_fp32};
 
   // user_ctx is not needed when doing single shot inferences
   // it can be used when doing multiple jobs concurrently to keep track of which jobs completed
   uint64_t user_ctx = 0;
 
   // Register a new job
-  EXIT_ON_ERROR(vollo_rt_add_job_fp32(ctx, model_index, user_ctx, inputs, outputs));
+  EXIT_ON_ERROR(vollo_rt_add_job(
+    ctx,
+    model_index,
+    user_ctx,
+    input_formats,
+    (const void* const*)inputs,
+    output_formats,
+    (void* const*)outputs));
 
   // Poll until completion
   size_t num_completed = 0;
