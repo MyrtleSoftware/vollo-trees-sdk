@@ -1,5 +1,9 @@
 # Release Notes
 
+## 2.0.1
+
+- Fix `libvollo_rt.a` and `libvollo_cfg.a` static libraries to only export their C API
+
 ## 2.0.0
 
 - Add support for multi-process and multi-threaded job starting and polling using vollo-rt

@@ -20,7 +20,7 @@ Trees:
 [Github Release page]: https://github.com/MyrtleSoftware/vollo-trees-sdk/releases/
 
 ```sh
-curl -LO https://github.com/MyrtleSoftware/vollo-trees-sdk/releases/download/v2.0.0/vollo-trees-amd-v80-u576d8192-2.0.tar.gz
+curl -LO https://github.com/MyrtleSoftware/vollo-trees-sdk/releases/download/v2.0.1/vollo-trees-amd-v80-u576d8192-2.0.tar.gz
 mkdir -p $VOLLO_TREES_SDK/bitstream
 tar -xzf vollo-trees-amd-v80-u576d8192-2.0.tar.gz -C $VOLLO_TREES_SDK/bitstream
 ```
@@ -28,7 +28,7 @@ tar -xzf vollo-trees-amd-v80-u576d8192-2.0.tar.gz -C $VOLLO_TREES_SDK/bitstream
 Alternatively, for the AMD `V80LL`, use:
 
 ```sh
-curl -LO https://github.com/MyrtleSoftware/vollo-trees-sdk/releases/download/v2.0.0/vollo-trees-amd-v80ll-u576d8192-2.0.tar.gz
+curl -LO https://github.com/MyrtleSoftware/vollo-trees-sdk/releases/download/v2.0.1/vollo-trees-amd-v80ll-u576d8192-2.0.tar.gz
 mkdir -p $VOLLO_TREES_SDK/bitstream
 tar -xzf vollo-trees-amd-v80ll-u576d8192-2.0.tar.gz -C $VOLLO_TREES_SDK/bitstream
 ```
